@@ -64,10 +64,10 @@ func run(cfgPath string) error {
 	slog.Info("registering worker in manager...")
 	rgr := registerer.NewHTTPRegisterer(cfg.Registerer)
 	id, err := rgr.Register()
-	//if err != nil {
-	//	slog.Error("registering failed", slog.Any("error", err))
-	//	return err
-	//}
+	if err != nil {
+		slog.Error("registering failed", slog.Any("error", err))
+		return err
+	}
 
 	slog.SetDefault(slog.With(
 		slog.String("service", "crackhash-worker"),
