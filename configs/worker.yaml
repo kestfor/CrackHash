@@ -1,0 +1,11 @@
+http:
+  port: 8080
+
+registerer:
+  register_url: "http://manager-service:8080/api/v1/manager/register"
+
+notifier:
+  notify_url: "http://manager-service:8080/api/v1/manager/notify"
+
+workers:
+  max_parallel: 10
