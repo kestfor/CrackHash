@@ -9,12 +9,10 @@ import (
 	"github.com/kestfor/CrackHash/internal/services/worker"
 	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
 	workerinterface "github.com/kestfor/CrackHash/internal/services/worker/worker"
-	"github.com/kestfor/CrackHash/pkg"
 )
 
 type workerImpl struct {
 	progress atomic.Pointer[worker.TaskProgress]
-	status   atomic.Pointer[worker.Status]
 	task     *worker.Task
 	result   *worker.TaskResult
 
@@ -26,7 +24,6 @@ var _ workerinterface.Worker = (*workerImpl)(nil)
 func NewWorker(notifiers []notifier.Notifier) *workerImpl {
 	return &workerImpl{
 		progress:  atomic.Pointer[worker.TaskProgress]{},
-		status:    atomic.Pointer[worker.Status]{},
 		notifiers: notifiers,
 		result:    &worker.TaskResult{},
 	}
@@ -37,6 +34,7 @@ func (w *workerImpl) Do(ctx context.Context, task *worker.Task) {
 	w.progress.Store(&worker.TaskProgress{
 		TaskID:         task.TaskID,
 		IterationsDone: 0,
+		Status:         worker.StatusNotStarted,
 	})
 
 	go func() {
@@ -48,24 +46,27 @@ func (w *workerImpl) Progress() *worker.TaskProgress {
 	return w.progress.Load()
 }
 
-func (w *workerImpl) Result() (result *worker.TaskResult, status worker.Status) {
-	stat := w.status.Load()
-	if stat == nil {
-		return nil, worker.StatusNotStarted
+func (w *workerImpl) totalIterations() int {
+	if len(w.task.IterationAlphabet) == 1 {
+		return 1
 	}
 
-	if *stat == worker.StatusDone {
-		return w.result, worker.StatusDone
-	}
-
-	return nil, *stat
-
+	m := len(w.task.IterationAlphabet)
+	return m * (m ^ w.task.MaxLength - 1) / (m - 1)
 }
 
 func (w *workerImpl) do(ctx context.Context) {
-	w.status.Store(pkg.ToPtr(worker.StatusInProgress))
+	progress := &worker.TaskProgress{
+		TaskID:          w.task.TaskID,
+		IterationsDone:  0,
+		Status:          worker.StatusInProgress,
+		TotalIterations: w.totalIterations(),
+	}
+
+	w.progress.Store(progress)
 
 	iterationsDone := 0
+
 	matches := make([]string, 0)
 
 	// TODO configure
@@ -75,7 +76,8 @@ func (w *workerImpl) do(ctx context.Context) {
 	for word := range generator.Iterate() {
 		select {
 		case <-ctx.Done():
-			w.status.Store(pkg.ToPtr(worker.StatusTimeout))
+			progress.Status = worker.StatusError
+			w.progress.Store(progress)
 			return
 		default:
 		}
@@ -83,10 +85,8 @@ func (w *workerImpl) do(ctx context.Context) {
 		iterationsDone++
 
 		if iterationsDone%progressFreq == 0 {
-			w.progress.Store(&worker.TaskProgress{
-				TaskID:         w.task.TaskID,
-				IterationsDone: iterationsDone,
-			})
+			progress.IterationsDone = iterationsDone
+			w.progress.Store(progress)
 		}
 
 		hash := md5.Sum([]byte(word))
@@ -98,13 +98,11 @@ func (w *workerImpl) do(ctx context.Context) {
 
 	}
 
-	w.result = &worker.TaskResult{
-		TaskID: w.task.TaskID,
-		Words:  matches,
-	}
+	progress.Status = worker.StatusReady
+	progress.IterationsDone = iterationsDone
+	w.progress.Store(progress)
 
-	w.status.Store(pkg.ToPtr(worker.StatusDone))
 	for _, n := range w.notifiers {
-		_ = n.Notify(w.result)
+		_ = n.Notify(progress)
 	}
 }

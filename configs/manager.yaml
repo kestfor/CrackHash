@@ -1,0 +1,9 @@
+http:
+  port: 8080
+
+healthcheck:
+  period: 10s
+  max_tries: 5
+
+hash_cracker:
+  alphabet: "abcd"

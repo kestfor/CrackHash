@@ -64,7 +64,7 @@ func (h *handler) HandleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.SubmitTask(r.Context(), task); err != nil {
+	if err := h.service.CreateTask(r.Context(), task); err != nil {
 		if errors.Is(err, worker.ErrInvalidTask) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -78,6 +78,60 @@ func (h *handler) HandleCreateTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *handler) HandleDeleteTask(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("task_id")
+
+	if taskID == "" {
+		http.Error(w, "task_id is required", http.StatusBadRequest)
+		return
+	}
+
+	taskUUID, err := uuid.Parse(taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := h.service.DeleteTask(r.Context(), taskUUID); err != nil {
+		if errors.Is(err, worker.ErrTaskNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *handler) HandleDoTask(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("task_id")
+
+	if taskID == "" {
+		http.Error(w, "task_id is required", http.StatusBadRequest)
+		return
+	}
+
+	taskUUID, err := uuid.Parse(taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := h.service.DoTask(r.Context(), taskUUID); err != nil {
+		if errors.Is(err, worker.ErrTaskNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	w.WriteHeader(http.StatusOK)

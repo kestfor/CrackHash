@@ -17,6 +17,7 @@ type workerService struct {
 
 	notifier notifier.Notifier
 	workers  map[uuid.UUID]worker2.Worker
+	tasks    map[uuid.UUID]*worker.Task
 	mu       sync.Mutex
 }
 
@@ -30,33 +31,46 @@ func NewService(config *worker.Config, notifier notifier.Notifier) *workerServic
 
 // Notify implements Notifier
 // Used to know when task is done to remove it from the map
-func (s *workerService) Notify(result *worker.TaskResult) error {
+func (s *workerService) Notify(result *worker.TaskProgress) error {
 	taskID := result.TaskID
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.workers, taskID)
-	return nil
+	return s.DeleteTask(context.Background(), taskID)
 }
 
-func (s *workerService) SubmitTask(ctx context.Context, task *worker.Task) error {
+func (s *workerService) CreateTask(ctx context.Context, task *worker.Task) error {
 	if len(s.workers) >= s.maxParallel {
 		return fmt.Errorf("max parallel tasks reached")
 	}
 
-	wrk := impl.NewWorker([]notifier.Notifier{s, s.notifier})
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.workers[task.TaskID]; ok {
+	if _, ok := s.tasks[task.TaskID]; ok {
 		return worker.ErrTaskAlreadyExists
 	}
 
-	s.workers[task.TaskID] = wrk
-	go func() {
-		wrk.Do(ctx, task)
-	}()
+	s.tasks[task.TaskID] = task
+
+	return nil
+}
+
+func (s *workerService) DoTask(ctx context.Context, taskID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, ok := s.tasks[taskID]
+	if !ok {
+		return worker.ErrTaskNotFound
+	}
+
+	wrk, ok := s.workers[taskID]
+	if !ok {
+		wrk = impl.NewWorker([]notifier.Notifier{s, s.notifier})
+		s.workers[taskID] = wrk
+
+		go func() {
+			wrk.Do(ctx, task)
+		}()
+	}
 
 	return nil
 }
@@ -77,6 +91,14 @@ func (s *workerService) TaskProgress(ctx context.Context, taskID uuid.UUID) (*wo
 	}
 
 	return progress, nil
+}
+
+func (s *workerService) DeleteTask(ctx context.Context, taskID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.workers, taskID)
+	delete(s.tasks, taskID)
+	return nil
 }
 
 func validateTask(task *worker.Task) error {

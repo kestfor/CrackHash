@@ -7,11 +7,10 @@ import (
 	"os"
 	"runtime/debug"
 
-	"github.com/kestfor/CrackHash/cmd/worker/handler"
-	"github.com/kestfor/CrackHash/internal/services/worker"
-	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
-	"github.com/kestfor/CrackHash/internal/services/worker/registerer"
-	"github.com/kestfor/CrackHash/internal/services/worker/workerservice"
+	"github.com/kestfor/CrackHash/cmd/manager/handler"
+	"github.com/kestfor/CrackHash/internal/services/manager"
+	"github.com/kestfor/CrackHash/internal/services/manager/healthchecker"
+	"github.com/kestfor/CrackHash/internal/services/manager/service"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -20,8 +19,8 @@ func New() *cobra.Command {
 	var cfgPath string
 
 	rootCmd := &cobra.Command{
-		Use:           "worker service",
-		Short:         "Worker service instance for cracking hashes",
+		Use:           "manager service",
+		Short:         "Manager service for cracking hashes",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -30,12 +29,16 @@ func New() *cobra.Command {
 	}
 
 	rootCmd.Flags().
-		StringVarP(&cfgPath, "config", "c", "configs/worker.yaml", "path to configuration file")
+		StringVarP(&cfgPath, "config", "c", "configs/manager.yaml", "path to configuration file")
 
 	return rootCmd
 }
 
 func run(cfgPath string) error {
+
+	slog.SetDefault(slog.With(
+		slog.String("service", "crackhash-manager"),
+	))
 
 	slog.Info("parsing config...")
 
@@ -62,40 +65,37 @@ func run(cfgPath string) error {
 	slog.Info("config validated")
 
 	slog.Info("registering worker in manager...")
-	rgr := registerer.NewHTTPRegisterer(cfg.Registerer)
-	id, err := rgr.Register()
-	if err != nil {
-		slog.Error("registering failed", slog.Any("error", err))
-		return err
-	}
 
-	slog.SetDefault(slog.With(
-		slog.String("service", "crackhash-worker"),
-		slog.Any("worker_id", id),
-	))
-
-	slog.Info("registered in manager")
 	slog.Info("initializing dependencies...")
-
-	httpNotifier := notifier.NewHTTPNotifier(cfg.Notifier)
-	workerService := workerservice.NewService(cfg.Worker, httpNotifier)
 	slog.Info("dependencies initialized")
 
-	initServer(cfg.HTTP, workerService)
+	var healthCheckProvider = func(workerAddr string) healthchecker.HealthChecker {
+		return healthCheck(workerAddr, cfg)
+	}
+
+	managerService := service.NewService(cfg.HashCracker.Alphabet, healthCheckProvider)
+	initServer(cfg.HTTP, managerService)
 
 	return nil
 }
 
-func initServer(httpServerConfig *HTTPServerConfig, workerService worker.Service) {
+func healthCheck(workerAddr string, config *Config) healthchecker.HealthChecker {
+	return healthchecker.NewHTTPHealthChecker(&healthchecker.HTTPHealthCheckerConfig{
+		URL:      fmt.Sprintf("http://%s/health", workerAddr),
+		MaxTries: config.Healthcheck.MaxTries,
+		Period:   config.Healthcheck.Period,
+	})
+}
+
+func initServer(httpServerConfig *HTTPConfig, managerService manager.Service) {
 	slog.Info("initializing http server...")
 
-	workerHandler := handler.NewHandler(workerService)
+	workerHandler := handler.NewHandler(managerService)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/v1/tasks/", workerHandler.HandleCreateTask)
-	mux.HandleFunc("GET /api/v1/tasks/{task_id}/progress", workerHandler.HandleGetProgress)
-	mux.HandleFunc("PUT /api/v1/tasks/{task_id}/do", workerHandler.HandleDoTask)
-	mux.HandleFunc("DELETE /api/v1/tasks/{task_id}", workerHandler.HandleDeleteTask)
+	mux.HandleFunc("POST /api/hash/crack", workerHandler.HandleCreateTask)
+	mux.HandleFunc("GET /api/hash/status", workerHandler.HandleGetTaskProgress)
+	mux.HandleFunc("POST /api/tasks/ready", workerHandler.HandleAddTaskResult)
 	mux.HandleFunc("GET /health", healthHandler)
 
 	wrappedMux := recoverMiddleware(mux)

@@ -3,10 +3,10 @@ package worker
 import "github.com/google/uuid"
 
 const (
-	StatusNotStarted Status = "not_started"
-	StatusInProgress Status = "in_progress"
-	StatusDone       Status = "done"
-	StatusTimeout    Status = "timeout"
+	StatusNotStarted Status = "NOT_STARTED"
+	StatusInProgress Status = "IN_PROGRESS"
+	StatusReady      Status = "DONE"
+	StatusError      Status = "ERROR"
 )
 
 type Status string
@@ -19,8 +19,11 @@ type Task struct {
 }
 
 type TaskProgress struct {
-	TaskID         uuid.UUID `json:"task_id"`
-	IterationsDone int       `json:"iterations_done"`
+	TaskID          uuid.UUID `json:"task_id"`
+	Status          Status    `json:"status"`
+	IterationsDone  int       `json:"iterations_done"`
+	TotalIterations int       `json:"total_iterations"`
+	Result          []string  `json:"result"`
 }
 
 type TaskResult struct {

@@ -1,13 +1,13 @@
 services:
-#  manager-service:
-#    build:
-#      context: ../
-#      dockerfile: docker/manager/Dockerfile
-#
-#    ports:
-#      - "8080:8080"
-#    networks:
-#      - crackhash-net
+  manager-service:
+    build:
+      context: ../
+      dockerfile: docker/manager/Dockerfile
+
+    ports:
+      - "8080:8080"
+    networks:
+      - crackhash-net
 
   worker-service:
     build:
@@ -15,8 +15,8 @@ services:
       dockerfile: docker/worker/Dockerfile
     expose:
       - "8080"
-#    depends_on:
-#      - manager-service
+    depends_on:
+      - manager-service
     networks:
       - crackhash-net
 

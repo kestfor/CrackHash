@@ -26,7 +26,7 @@ func NewHTTPNotifier(config *HTTPNotifierConfig) *httpNotifier {
 	}
 }
 
-func (n *httpNotifier) Notify(result *worker.TaskResult) error {
+func (n *httpNotifier) Notify(result *worker.TaskProgress) error {
 
 	jsonBytes, err := json.Marshal(result)
 	if err != nil {

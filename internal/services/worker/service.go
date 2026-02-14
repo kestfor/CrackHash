@@ -12,6 +12,8 @@ var ErrTaskNotFound = errors.New("task not found")
 var ErrTaskAlreadyExists = errors.New("task already exists")
 
 type Service interface {
-	SubmitTask(ctx context.Context, task *Task) error
+	CreateTask(ctx context.Context, task *Task) error
+	DeleteTask(ctx context.Context, taskID uuid.UUID) error
+	DoTask(ctx context.Context, taskID uuid.UUID) error
 	TaskProgress(ctx context.Context, taskID uuid.UUID) (*TaskProgress, error)
 }
