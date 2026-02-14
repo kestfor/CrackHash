@@ -1,0 +1,288 @@
+openapi: 3.0.3
+info:
+  title: CrackHash Worker Internal API
+  description: |
+    Internal API для воркера системы CrackHash.
+    Этот API используется менеджером для управления задачами на воркере.
+  version: 1.0.0
+  contact:
+    name: CrackHash Team
+
+servers:
+  - url: http://worker-service:8080
+    description: Worker service in Docker network
+
+paths:
+  /api/v1/tasks/:
+    post:
+      summary: Создать задачу на воркере
+      description: Создает новую задачу для обработки на воркере
+      operationId: createTask
+      tags:
+        - Tasks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task'
+            example:
+              task_id: "76d1957d-8149-4e15-a697-977611dc44d5"
+              target_hash: "e2fc714c4727ee9395f324cd2e7f331f"
+              iteration_alphabet: "abcdefgh"
+              max_length: 4
+      responses:
+        '200':
+          description: Задача успешно создана
+        '400':
+          description: Неверный формат запроса
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "Invalid request body"
+        '409':
+          description: Задача с таким ID уже существует
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "Task already exists"
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/tasks/{task_id}/do:
+    put:
+      summary: Запустить выполнение задачи
+      description: Запускает обработку ранее созданной задачи
+      operationId: doTask
+      tags:
+        - Tasks
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          description: UUID задачи
+          schema:
+            type: string
+            format: uuid
+          example: "[UUID8]"
+      responses:
+        '200':
+          description: Задача успешно запущена
+        '400':
+          description: Неверный формат task_id
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: Задача не найдена
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "Task not found"
+        '500':
+          description: Внутренняя ошибка сервера
+
+  /api/v1/tasks/{task_id}/progress:
+    get:
+      summary: Получить прогресс выполнения задачи
+      description: Возвращает текущий статус и прогресс выполнения задачи
+      operationId: getProgress
+      tags:
+        - Tasks
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          description: UUID задачи
+          schema:
+            type: string
+            format: uuid
+          example: "[UUID9]"
+      responses:
+        '200':
+          description: Прогресс задачи
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskProgress'
+              examples:
+                in_progress:
+                  summary: Задача выполняется
+                  value:
+                    task_id: "[UUID10]"
+                    status: "IN_PROGRESS"
+                    iterations_done: [Passport13]
+                    total_iterations: 10000
+                    result: []
+                ready:
+                  summary: Задача завершена
+                  value:
+                    task_id: "[UUID11]"
+                    status: "READY"
+                    iterations_done: 10000
+                    total_iterations: 10000
+                    result: ["abcd", "test"]
+                error:
+                  summary: Ошибка выполнения
+                  value:
+                    task_id: "[UUID12]"
+                    status: "ERROR"
+                    iterations_done: 5000
+                    total_iterations: 10000
+                    result: []
+        '400':
+          description: Неверный формат task_id
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: Задача не найдена
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "Task not found"
+        '500':
+          description: Внутренняя ошибка сервера
+
+  /api/v1/tasks/{task_id}:
+    delete:
+      summary: Удалить задачу
+      description: Удаляет задачу с воркера
+      operationId: deleteTask
+      tags:
+        - Tasks
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          description: UUID задачи
+          schema:
+            type: string
+            format: uuid
+          example: "[UUID13]"
+      responses:
+        '200':
+          description: Задача успешно удалена
+        '400':
+          description: Неверный формат task_id
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: Задача не найдена
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "Task not found"
+        '500':
+          description: Внутренняя ошибка сервера
+
+  /health:
+    get:
+      summary: Health check endpoint
+      description: Проверка работоспособности воркера
+      operationId: healthCheck
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Воркер работает нормально
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "OK"
+
+components:
+  schemas:
+    Task:
+      type: object
+      required:
+        - task_id
+        - target_hash
+        - iteration_alphabet
+        - max_length
+      properties:
+        task_id:
+          type: string
+          format: uuid
+          description: Уникальный идентификатор задачи
+          example: "[UUID14]"
+        target_hash:
+          type: string
+          description: MD5 хэш, который нужно взломать
+          pattern: '^[a-f0-9]{32}$'
+          example: "e2fc714c4727ee9395f324cd2e7f331f"
+        iteration_alphabet:
+          type: string
+          description: Часть алфавита для перебора, назначенная этому воркеру
+          example: "abcdefgh"
+        max_length:
+          type: integer
+          description: Максимальная длина строки для перебора
+          minimum: 1
+          maximum: 10
+          example: 4
+
+    TaskProgress:
+      type: object
+      required:
+        - task_id
+        - status
+        - iterations_done
+        - total_iterations
+        - result
+      properties:
+        task_id:
+          type: string
+          format: uuid
+          description: Уникальный идентификатор задачи
+          example: "[UUID15]"
+        status:
+          type: string
+          enum:
+            - NOT_STARTED
+            - IN_PROGRESS
+            - READY
+            - ERROR
+          description: |
+            Текущий статус задачи:
+            * `NOT_STARTED` - задача создана, но еще не началась
+            * `IN_PROGRESS` - задача выполняется
+            * `READY` - задача завершена успешно
+            * `ERROR` - произошла ошибка
+          example: "IN_PROGRESS"
+        iterations_done:
+          type: integer
+          description: Количество выполненных итераций
+          minimum: 0
+          example: [Passport14]
+        total_iterations:
+          type: integer
+          description: Общее количество итераций
+          minimum: 0
+          example: 10000
+        result:
+          type: array
+          items:
+            type: string
+          description: Найденные строки, соответствующие хэшу
+          example: ["abcd"]
+
+tags:
+  - name: Tasks
+    description: Операции с задачами
+  - name: Health
+    description: Проверка работоспособности
