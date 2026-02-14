@@ -1,83 +1,168 @@
 package manager
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestSplitAlphabet(t *testing.T) {
+func TestSearchSpaceSize(t *testing.T) {
 	tests := []struct {
-		name     string
-		alphabet string
-		parts    int
-		want     []string
+		name         string
+		alphabetSize int
+		maxLength    int
+		want         uint64
 	}{
 		{
-			name:     "split alphabet into 2 parts",
-			alphabet: "abcd",
-			parts:    2,
-			want:     []string{"ab", "cd"},
+			name:         "alphabet size 3, max length 1",
+			alphabetSize: 3,
+			maxLength:    1,
+			want:         3, // 3^1 = 3
 		},
 		{
-			name:     "split alphabet into 3 parts",
-			alphabet: "abc",
-			parts:    3,
-			want:     []string{"a", "b", "c"},
+			name:         "alphabet size 3, max length 2",
+			alphabetSize: 3,
+			maxLength:    2,
+			want:         12, // 3 + 9 = 12
 		},
 		{
-			name:     "split alphabet into 1 part",
-			alphabet: "abcd",
-			parts:    1,
-			want:     []string{"abcd"},
+			name:         "alphabet size 2, max length 3",
+			alphabetSize: 2,
+			maxLength:    3,
+			want:         14, // 2 + 4 + 8 = 14
 		},
 		{
-			name:     "split alphabet into 3 parts with remainder (duplicates allowed)",
-			alphabet: "abcd",
-			parts:    3,
-			want:     []string{"ab", "cd", "ab"}, // ceil(4/3)=2, last part wraps around
+			name:         "alphabet size 36, max length 1",
+			alphabetSize: 36,
+			maxLength:    1,
+			want:         36,
 		},
 		{
-			name:     "split 36 chars into 10 parts",
-			alphabet: "abcdefghijklmnopqrstuvwxyz0123456789",
-			parts:    10,
-			want: []string{
-				"abcd", "efgh", "ijkl", "mnop", "qrst",
-				"uvwx", "yz01", "2345", "6789", "abcd",
-			}, // ceil(36/10)=4
+			name:         "alphabet size 36, max length 2",
+			alphabetSize: 36,
+			maxLength:    2,
+			want:         36 + 36*36, // 36 + 1296 = 1332
 		},
 		{
-			name:     "split 9 chars into 10 parts (more parts than chars)",
-			alphabet: "abcdefghi",
-			parts:    10,
-			want:     []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "a"}, // ceil(9/10)=1
+			name:         "zero alphabet size",
+			alphabetSize: 0,
+			maxLength:    5,
+			want:         0,
 		},
 		{
-			name:     "empty alphabet",
-			alphabet: "",
-			parts:    3,
-			want:     []string{},
+			name:         "zero max length",
+			alphabetSize: 36,
+			maxLength:    0,
+			want:         0,
 		},
 		{
-			name:     "zero parts",
-			alphabet: "abcd",
-			parts:    0,
-			want:     []string{},
-		},
-		{
-			name:     "split 26 chars into 5 parts",
-			alphabet: "abcdefghijklmnopqrstuvwxyz",
-			parts:    5,
-			want:     []string{"abcdef", "ghijkl", "mnopqr", "stuvwx", "yz"}, // ceil(26/5)=6
+			name:         "negative values",
+			alphabetSize: -1,
+			maxLength:    -1,
+			want:         0,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := SplitAlphabet(tt.alphabet, tt.parts)
-			assert.Equal(t, tt.want, got, fmt.Sprintf("SplitAlphabet() = %v, want %v", got, tt.want))
+			got := SearchSpaceSize(tt.alphabetSize, tt.maxLength)
+			assert.Equal(t, tt.want, got)
 		})
 	}
+}
 
+func TestSplitRange(t *testing.T) {
+	tests := []struct {
+		name      string
+		totalSize uint64
+		parts     int
+		want      []Range
+		wantErr   bool
+	}{
+		{
+			name:      "split 10 into 2 parts",
+			totalSize: 10,
+			parts:     2,
+			want:      []Range{{0, 5}, {5, 10}},
+			wantErr:   false,
+		},
+		{
+			name:      "split 10 into 3 parts",
+			totalSize: 10,
+			parts:     3,
+			want:      []Range{{0, 4}, {4, 7}, {7, 10}}, // 4 + 3 + 3 = 10
+			wantErr:   false,
+		},
+		{
+			name:      "split 100 into 3 parts",
+			totalSize: 100,
+			parts:     3,
+			want:      []Range{{0, 34}, {34, 67}, {67, 100}}, // 34 + 33 + 33 = 100
+			wantErr:   false,
+		},
+		{
+			name:      "split 12 into 4 parts",
+			totalSize: 12,
+			parts:     4,
+			want:      []Range{{0, 3}, {3, 6}, {6, 9}, {9, 12}},
+			wantErr:   false,
+		},
+		{
+			name:      "split 5 into 5 parts",
+			totalSize: 5,
+			parts:     5,
+			want:      []Range{{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}},
+			wantErr:   false,
+		},
+		{
+			name:      "split into 1 part",
+			totalSize: 100,
+			parts:     1,
+			want:      []Range{{0, 100}},
+			wantErr:   false,
+		},
+		{
+			name:      "zero parts",
+			totalSize: 100,
+			parts:     0,
+			want:      []Range{},
+			wantErr:   false,
+		},
+		{
+			name:      "zero total size",
+			totalSize: 0,
+			parts:     3,
+			want:      nil,
+			wantErr:   true,
+		},
+		{
+			name:      "parts exceed total size",
+			totalSize: 3,
+			parts:     5,
+			want:      nil,
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := SplitRange(tt.totalSize, tt.parts)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+
+			// Verify ranges are contiguous and cover the entire space
+			if len(got) > 0 {
+				assert.Equal(t, uint64(0), got[0].Start)
+				assert.Equal(t, tt.totalSize, got[len(got)-1].End)
+				for i := 1; i < len(got); i++ {
+					assert.Equal(t, got[i-1].End, got[i].Start, "ranges should be contiguous")
+				}
+			}
+		})
+	}
 }

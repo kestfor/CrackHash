@@ -191,36 +191,39 @@ func (s *managerService) SubmitTask(ctx context.Context, targetHash string, maxL
 		return uuid.Nil, manager.ErrInvalidMaxLength
 	}
 
+	// Calculate total search space size and split into ranges
+	totalSize := manager.SearchSpaceSize(len(s.alphabet), maxLength)
+	ranges, err := manager.SplitRange(totalSize, min(workersNum, int(totalSize)))
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to split search space: %w", err)
+	}
+
 	slog.Info("submitting task",
 		slog.String("target_hash", targetHash),
 		slog.Int("max_length", maxLength),
 		slog.Int("workers_count", workersNum),
+		slog.Uint64("total_search_space", totalSize),
 	)
 
 	taskID := uuid.New()
-	parts := manager.SplitAlphabet(s.alphabet, workersNum)
 
 	availableWorkers := make([]uuid.UUID, 0, workersNum)
-	partNum := 0
-
-	// now tries assign to all workerHTTPClients
+	rangeIdx := 0
 
 	for wID, client := range s.workerHTTPClients {
-		if partNum >= len(parts) {
+		if rangeIdx >= len(ranges) {
 			break
 		}
 
-		part := parts[partNum]
-		if part == "" {
-			partNum++
-			continue
-		}
+		r := ranges[rangeIdx]
 
 		task := &worker.Task{
-			TaskID:            taskID,
-			TargetHash:        targetHash,
-			IterationAlphabet: part,
-			MaxLength:         maxLength,
+			TaskID:     taskID,
+			TargetHash: targetHash,
+			Alphabet:   s.alphabet,
+			MaxLength:  maxLength,
+			StartIndex: r.Start,
+			EndIndex:   r.End,
 		}
 
 		err := client.CreateTask(ctx, task)
@@ -229,7 +232,7 @@ func (s *managerService) SubmitTask(ctx context.Context, targetHash string, maxL
 				slog.String("worker_id", wID.String()),
 				slog.Any("error", err),
 			)
-			// Clean up created taskToWorkersMap on other workerHTTPClients
+			// Clean up created tasks on other workers
 			for _, createdWID := range availableWorkers {
 				if c, ok := s.workerHTTPClients[createdWID]; ok {
 					_ = c.DeleteTask(ctx, taskID)
@@ -238,18 +241,23 @@ func (s *managerService) SubmitTask(ctx context.Context, targetHash string, maxL
 			return uuid.Nil, fmt.Errorf("failed to create task on worker %s: %w", wID.String(), err)
 		}
 
+		slog.Info("task created on worker",
+			slog.String("worker_id", wID.String()),
+			slog.Uint64("start_index", r.Start),
+			slog.Uint64("end_index", r.End),
+		)
+
 		availableWorkers = append(availableWorkers, wID)
-		partNum++
+		rangeIdx++
 	}
 
 	if len(availableWorkers) == 0 {
 		return uuid.Nil, manager.ErrNoAvailableWorkers
 	}
 
-	// Start all taskToWorkersMap
+	// Start all tasks
 	s.taskToWorkersMap[taskID] = set.New[uuid.UUID]()
 	for _, wID := range availableWorkers {
-
 		s.taskToWorkersMap[taskID].Add(wID)
 		client := s.workerHTTPClients[wID]
 

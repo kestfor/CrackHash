@@ -3,7 +3,15 @@ info:
   title: CrackHash Worker Internal API
   description: |
     Internal API для воркера системы CrackHash.
-    Этот API используется менеджером для управления задачами на воркере.
+
+    Этот API используется менеджером для управления задачами на воркере:
+    - Создание задач на перебор хэшей
+    - Запуск выполнения задач
+    - Удаление задач
+
+    **Важно:** Воркер использует push-модель для отправки прогресса.
+    Прогресс периодически отправляется на менеджер (POST /api/tasks/progress),
+    а не запрашивается менеджером.
   version: 1.0.0
   contact:
     name: CrackHash Team
@@ -12,11 +20,29 @@ servers:
   - url: http://worker-service:8080
     description: Worker service in Docker network
 
+tags:
+  - name: Tasks
+    description: Операции с задачами на взлом хэшей
+  - name: Health
+    description: Проверка работоспособности воркера
+
 paths:
   /api/v1/tasks/:
     post:
       summary: Создать задачу на воркере
-      description: Создает новую задачу для обработки на воркере
+      description: |
+        Создаёт новую задачу для обработки на воркере.
+
+        После создания задача находится в статусе `NOT_STARTED` и ожидает запуска
+        через endpoint `/api/v1/tasks/{task_id}/do`.
+
+        Менеджер передаёт воркеру:
+        - `task_id` - уникальный идентификатор задачи (общий для всех воркеров)
+        - `target_hash` - MD5 хэш, который нужно взломать
+        - `alphabet` - полный алфавит для генерации слов
+        - `max_length` - максимальная длина перебираемых слов
+        - `start_index` - начальный индекс диапазона (включительно)
+        - `end_index` - конечный индекс диапазона (исключительно)
       operationId: createTask
       tags:
         - Tasks
@@ -26,28 +52,57 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/Task'
-            example:
-              task_id: "76d1957d-8149-4e15-a697-977611dc44d5"
-              target_hash: "e2fc714c4727ee9395f324cd2e7f331f"
-              iteration_alphabet: "abcdefgh"
-              max_length: 4
+            examples:
+              worker1:
+                summary: Задача для первого воркера (диапазон 0-444)
+                value:
+                  task_id: "550e8400-e29b-41d4-a716-446655440001"
+                  target_hash: "e2fc714c4727ee9395f324cd2e7f331f"
+                  alphabet: "abcdefghijklmnopqrstuvwxyz0123456789"
+                  max_length: 4
+                  start_index: 0
+                  end_index: 444
+              worker2:
+                summary: Задача для второго воркера (диапазон 444-888)
+                value:
+                  task_id: "550e8400-e29b-41d4-a716-446655440001"
+                  target_hash: "e2fc714c4727ee9395f324cd2e7f331f"
+                  alphabet: "abcdefghijklmnopqrstuvwxyz0123456789"
+                  max_length: 4
+                  start_index: 444
+                  end_index: 888
+              worker3:
+                summary: Задача для третьего воркера (диапазон 888-1332)
+                value:
+                  task_id: "550e8400-e29b-41d4-a716-446655440001"
+                  target_hash: "e2fc714c4727ee9395f324cd2e7f331f"
+                  alphabet: "abcdefghijklmnopqrstuvwxyz0123456789"
+                  max_length: 4
+                  start_index: 888
+                  end_index: 1332
       responses:
         '200':
           description: Задача успешно создана
         '400':
-          description: Неверный формат запроса
+          description: Неверный формат запроса или невалидные данные
           content:
             text/plain:
               schema:
                 type: string
-              example: "Invalid request body"
+              examples:
+                invalid_json:
+                  summary: Невалидный JSON
+                  value: "invalid character '}' looking for beginning of value"
+                invalid_task:
+                  summary: Невалидная задача
+                  value: "invalid task: empty target hash"
         '409':
           description: Задача с таким ID уже существует
           content:
             text/plain:
               schema:
                 type: string
-              example: "Task already exists"
+              example: "task already exists"
         '500':
           description: Внутренняя ошибка сервера
           content:
@@ -58,7 +113,16 @@ paths:
   /api/v1/tasks/{task_id}/do:
     put:
       summary: Запустить выполнение задачи
-      description: Запускает обработку ранее созданной задачи
+      description: |
+        Запускает обработку ранее созданной задачи.
+
+        После вызова этого endpoint:
+        1. Задача переходит в статус `IN_PROGRESS`
+        2. Воркер начинает перебор слов в фоновом режиме
+        3. Периодически отправляет прогресс на менеджер (push-модель)
+        4. По завершении отправляет финальный результат
+
+        Endpoint возвращает ответ сразу, не дожидаясь завершения задачи.
       operationId: doTask
       tags:
         - Tasks
@@ -70,7 +134,7 @@ paths:
           schema:
             type: string
             format: uuid
-          example: "[UUID8]"
+          example: "550e8400-e29b-41d4-a716-446655440001"
       responses:
         '200':
           description: Задача успешно запущена
@@ -80,84 +144,28 @@ paths:
             text/plain:
               schema:
                 type: string
+              example: "invalid UUID format"
         '404':
           description: Задача не найдена
           content:
             text/plain:
               schema:
                 type: string
-              example: "Task not found"
-        '500':
-          description: Внутренняя ошибка сервера
-
-  /api/v1/tasks/{task_id}/progress:
-    get:
-      summary: Получить прогресс выполнения задачи
-      description: Возвращает текущий статус и прогресс выполнения задачи
-      operationId: getProgress
-      tags:
-        - Tasks
-      parameters:
-        - name: task_id
-          in: path
-          required: true
-          description: UUID задачи
-          schema:
-            type: string
-            format: uuid
-          example: "[UUID9]"
-      responses:
-        '200':
-          description: Прогресс задачи
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TaskProgress'
-              examples:
-                in_progress:
-                  summary: Задача выполняется
-                  value:
-                    task_id: "[UUID10]"
-                    status: "IN_PROGRESS"
-                    iterations_done: [Passport13]
-                    total_iterations: 10000
-                    result: []
-                ready:
-                  summary: Задача завершена
-                  value:
-                    task_id: "[UUID11]"
-                    status: "READY"
-                    iterations_done: 10000
-                    total_iterations: 10000
-                    result: ["abcd", "test"]
-                error:
-                  summary: Ошибка выполнения
-                  value:
-                    task_id: "[UUID12]"
-                    status: "ERROR"
-                    iterations_done: 5000
-                    total_iterations: 10000
-                    result: []
-        '400':
-          description: Неверный формат task_id
-          content:
-            text/plain:
-              schema:
-                type: string
-        '404':
-          description: Задача не найдена
-          content:
-            text/plain:
-              schema:
-                type: string
-              example: "Task not found"
+              example: "task not found"
         '500':
           description: Внутренняя ошибка сервера
 
   /api/v1/tasks/{task_id}:
     delete:
       summary: Удалить задачу
-      description: Удаляет задачу с воркера
+      description: |
+        Удаляет задачу с воркера.
+
+        Если задача выполняется, она будет отменена.
+        Используется менеджером для:
+        - Отмены задач при ошибках
+        - Очистки ресурсов после завершения
+        - Rollback при частичном создании задач
       operationId: deleteTask
       tags:
         - Tasks
@@ -169,7 +177,7 @@ paths:
           schema:
             type: string
             format: uuid
-          example: "[UUID13]"
+          example: "550e8400-e29b-41d4-a716-446655440001"
       responses:
         '200':
           description: Задача успешно удалена
@@ -179,20 +187,26 @@ paths:
             text/plain:
               schema:
                 type: string
+              example: "invalid UUID format"
         '404':
           description: Задача не найдена
           content:
             text/plain:
               schema:
                 type: string
-              example: "Task not found"
+              example: "task not found"
         '500':
           description: Внутренняя ошибка сервера
 
   /health:
     get:
       summary: Health check endpoint
-      description: Проверка работоспособности воркера
+      description: |
+        Проверка работоспособности воркера.
+
+        Используется менеджером для периодической проверки здоровья воркеров.
+        При недоступности воркера (несколько неудачных попыток) менеджер
+        помечает все его задачи как ERROR.
       operationId: healthCheck
       tags:
         - Health
@@ -212,34 +226,61 @@ components:
       required:
         - task_id
         - target_hash
-        - iteration_alphabet
+        - alphabet
         - max_length
+        - start_index
+        - end_index
       properties:
         task_id:
           type: string
           format: uuid
-          description: Уникальный идентификатор задачи
-          example: "[UUID14]"
+          description: |
+            Уникальный идентификатор задачи.
+            Один task_id используется для всех воркеров, обрабатывающих одну задачу.
+          example: "550e8400-e29b-41d4-a716-446655440001"
         target_hash:
           type: string
           description: MD5 хэш, который нужно взломать
           pattern: '^[a-f0-9]{32}$'
           example: "e2fc714c4727ee9395f324cd2e7f331f"
-        iteration_alphabet:
+        alphabet:
           type: string
-          description: Часть алфавита для перебора, назначенная этому воркеру
-          example: "abcdefgh"
+          description: |
+            Полный алфавит для генерации слов.
+            Все воркеры получают один и тот же алфавит.
+            Пространство поиска делится между воркерами по диапазонам индексов.
+          example: "abcdefghijklmnopqrstuvwxyz0123456789"
         max_length:
           type: integer
-          description: Максимальная длина строки для перебора
+          description: Максимальная длина строки для перебора (от 1 до max_length включительно)
           minimum: 1
           maximum: 10
           example: 4
+        start_index:
+          type: integer
+          format: int64
+          description: |
+            Начальный индекс диапазона (включительно).
+            SearchSpace преобразует индекс в соответствующее слово.
+          minimum: 0
+          example: 0
+        end_index:
+          type: integer
+          format: int64
+          description: |
+            Конечный индекс диапазона (исключительно).
+            Воркер обрабатывает слова с индексами [start_index, end_index).
+          minimum: 1
+          example: 500000
 
     TaskProgress:
       type: object
+      description: |
+        Структура прогресса, которую воркер отправляет на менеджер.
+        Отправляется через POST на manager:/api/tasks/progress (push-модель).
       required:
         - task_id
+        - worker_id
         - status
         - iterations_done
         - total_iterations
@@ -249,7 +290,12 @@ components:
           type: string
           format: uuid
           description: Уникальный идентификатор задачи
-          example: "[UUID15]"
+          example: "550e8400-e29b-41d4-a716-446655440001"
+        worker_id:
+          type: string
+          format: uuid
+          description: Уникальный идентификатор воркера (получен при регистрации)
+          example: "660e8400-e29b-41d4-a716-446655440002"
         status:
           type: string
           enum:
@@ -258,31 +304,25 @@ components:
             - READY
             - ERROR
           description: |
-            Текущий статус задачи:
-            * `NOT_STARTED` - задача создана, но еще не началась
+            Текущий статус задачи на этом воркере:
+            * `NOT_STARTED` - задача создана, но ещё не начата
             * `IN_PROGRESS` - задача выполняется
             * `READY` - задача завершена успешно
             * `ERROR` - произошла ошибка
           example: "IN_PROGRESS"
         iterations_done:
           type: integer
-          description: Количество выполненных итераций
+          description: Количество выполненных итераций (проверенных слов)
           minimum: 0
-          example: [Passport14]
+          example: 5000
         total_iterations:
           type: integer
-          description: Общее количество итераций
+          description: Общее количество итераций для этого воркера
           minimum: 0
           example: 10000
         result:
           type: array
           items:
             type: string
-          description: Найденные строки, соответствующие хэшу
+          description: Найденные строки, хэш которых совпадает с target_hash
           example: ["abcd"]
-
-tags:
-  - name: Tasks
-    description: Операции с задачами
-  - name: Health
-    description: Проверка работоспособности

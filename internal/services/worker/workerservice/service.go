@@ -102,12 +102,16 @@ func validateTask(task *worker.Task) error {
 		return fmt.Errorf("%w: target hash is required", worker.ErrInvalidTask)
 	}
 
-	if task.IterationAlphabet == "" {
-		return fmt.Errorf("%w: iteration alphabet is required", worker.ErrInvalidTask)
+	if task.Alphabet == "" {
+		return fmt.Errorf("%w: alphabet is required", worker.ErrInvalidTask)
 	}
 
 	if task.MaxLength <= 0 {
 		return fmt.Errorf("%w: max length must be greater than 0", worker.ErrInvalidTask)
+	}
+
+	if task.EndIndex <= task.StartIndex {
+		return fmt.Errorf("%w: end index must be greater than start index", worker.ErrInvalidTask)
 	}
 
 	return nil

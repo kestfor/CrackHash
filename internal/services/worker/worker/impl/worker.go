@@ -5,7 +5,6 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"log/slog"
-	"math"
 	"sync/atomic"
 	"time"
 
@@ -51,21 +50,25 @@ func (w *workerImpl) do(ctx context.Context) {
 	slog.Info("worker started processing",
 		slog.String("task_id", w.task.TaskID.String()),
 		slog.String("target_hash", w.task.TargetHash),
-		slog.String("iteration_alphabet", w.task.IterationAlphabet),
+		slog.String("alphabet", w.task.Alphabet),
 		slog.Int("max_length", w.task.MaxLength),
+		slog.Uint64("start_index", w.task.StartIndex),
+		slog.Uint64("end_index", w.task.EndIndex),
 	)
 
 	wrkContext := &workerContext{}
 	wrkContext.SetStatus(worker.StatusInProgress)
-	wrkContext.TotalIterations = w.totalIterations()
+	wrkContext.TotalIterations = int(w.task.EndIndex - w.task.StartIndex)
 
 	failed := false
 
 	notifyContext, cancelNotify := context.WithCancel(ctx)
 	go w.backgroundNotify(notifyContext, wrkContext)
 
-	generator := WordGenerator(w.task.MaxLength, w.task.IterationAlphabet)
-	for word := range generator.Iterate() {
+	searchSpace := NewSearchSpace(w.task.Alphabet, w.task.MaxLength)
+	buf := make([]byte, w.task.MaxLength)
+
+	for idx := w.task.StartIndex; idx < w.task.EndIndex; idx++ {
 		select {
 		case <-ctx.Done():
 			slog.Warn("task cancelled",
@@ -77,15 +80,25 @@ func (w *workerImpl) do(ctx context.Context) {
 		default:
 		}
 
-		hash := md5.Sum([]byte(word))
+		if failed {
+			break
+		}
+
+		wordLen := searchSpace.FillWord(idx, buf)
+		if wordLen == 0 {
+			continue
+		}
+
+		word := buf[:wordLen]
+		hash := md5.Sum(word)
 		encoded := hex.EncodeToString(hash[:])
 
 		if w.task.TargetHash == encoded {
 			slog.Info("match found",
 				slog.String("task_id", w.task.TaskID.String()),
-				slog.String("word", word),
+				slog.String("word", string(word)),
 			)
-			wrkContext.AddMatch(word)
+			wrkContext.AddMatch(string(word))
 		}
 
 		wrkContext.IterationsDone.Add(1)
@@ -140,22 +153,6 @@ func (w *workerImpl) notifyProgress(progress *worker.TaskProgress) {
 			)
 		}
 	}
-}
-
-func (w *workerImpl) totalIterations() int {
-	m := len(w.task.IterationAlphabet)
-	if m == 0 {
-		return 0
-	}
-	if m == 1 {
-		return w.task.MaxLength
-	}
-
-	total := 0
-	for i := 1; i <= w.task.MaxLength; i++ {
-		total += int(math.Pow(float64(m), float64(i)))
-	}
-	return total
 }
 
 func (w *workerImpl) contextToProgress(wrkContext *workerContext) *worker.TaskProgress {

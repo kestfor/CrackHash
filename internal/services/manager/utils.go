@@ -1,40 +1,64 @@
 package manager
 
-import "math"
+import "fmt"
 
-// SplitAlphabet splits the alphabet into the specified number of parts.
-// Uses ceiling division to determine part size.
-// Duplicates are allowed when parts > alphabet length.
-// Example: 39 chars / 10 parts = 4 chars per part (ceil(39/10) = 4)
-// Example: 9 chars / 10 parts = some parts will be duplicates
-func SplitAlphabet(alphabet string, parts int) []string {
+// SearchSpaceSize calculates the total number of words in the search space.
+// For alphabet of size n and maxLength l, total = n + n^2 + ... + n^l = n*(n^l - 1)/(n-1)
+func SearchSpaceSize(alphabetSize int, maxLength int) uint64 {
+	if alphabetSize <= 0 || maxLength <= 0 {
+		return 0
+	}
+
+	base := uint64(alphabetSize)
+	var total uint64 = 0
+	var power uint64 = 1
+
+	for i := 1; i <= maxLength; i++ {
+		power *= base
+		total += power
+	}
+
+	return total
+}
+
+// Range represents a range [Start, End) for a worker to process
+type Range struct {
+	Start uint64
+	End   uint64
+}
+
+// SplitRange splits the total space [0, totalSize) into approximately equal ranges.
+// Returns 'parts' ranges and an error if parts > totalSize.
+func SplitRange(totalSize uint64, parts int) ([]Range, error) {
 	if parts <= 0 {
-		return []string{}
+		return []Range{}, nil
 	}
 
-	length := len(alphabet)
-	if length == 0 {
-		return []string{}
+	if totalSize == 0 {
+		return nil, fmt.Errorf("cannot split empty space")
 	}
 
-	// Calculate part size with ceiling division
-	partSize := int(math.Ceil(float64(length) / float64(parts)))
+	if uint64(parts) > totalSize {
+		return nil, fmt.Errorf("parts (%d) cannot exceed total size (%d)", parts, totalSize)
+	}
 
-	result := make([]string, parts)
+	ranges := make([]Range, parts)
+	baseSize := totalSize / uint64(parts)
+	remainder := totalSize % uint64(parts)
 
+	var start uint64 = 0
 	for i := 0; i < parts; i++ {
-		start := i * partSize
-		if start >= length {
-			start = start % length
+		size := baseSize
+		if uint64(i) < remainder {
+			size++ // distribute remainder among first workers
 		}
 
-		end := start + partSize
-		if end > length {
-			end = length
+		ranges[i] = Range{
+			Start: start,
+			End:   start + size,
 		}
-
-		result[i] = alphabet[start:end]
+		start += size
 	}
 
-	return result
+	return ranges, nil
 }

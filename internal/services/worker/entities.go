@@ -16,10 +16,12 @@ const (
 type Status string
 
 type Task struct {
-	TaskID            uuid.UUID `json:"task_id"`
-	TargetHash        string    `json:"target_hash"`
-	IterationAlphabet string    `json:"iteration_alphabet"`
-	MaxLength         int       `json:"max_length"`
+	TaskID     uuid.UUID `json:"task_id"`
+	TargetHash string    `json:"target_hash"`
+	Alphabet   string    `json:"alphabet"`
+	MaxLength  int       `json:"max_length"`
+	StartIndex uint64    `json:"start_index"`
+	EndIndex   uint64    `json:"end_index"` // exclusive
 }
 
 type TaskProgress struct {
@@ -32,7 +34,8 @@ type TaskProgress struct {
 }
 
 func (t *Task) String() string {
-	return fmt.Sprintf("Task<ID: %s, Hash: %s, Alphabet: %s, MaxLength: %d>", t.TaskID, t.TargetHash, t.IterationAlphabet, t.MaxLength)
+	return fmt.Sprintf("Task<ID: %s, Hash: %s, Alphabet: %s, MaxLength: %d, Range: [%d, %d)>",
+		t.TaskID, t.TargetHash, t.Alphabet, t.MaxLength, t.StartIndex, t.EndIndex)
 }
 
 func (t *TaskProgress) String() string {

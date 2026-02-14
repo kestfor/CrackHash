@@ -1,0 +1,427 @@
+openapi: 3.0.3
+info:
+  title: CrackHash Manager API
+  description: |
+    API менеджера системы CrackHash.
+
+    Менеджер предоставляет два типа API:
+    - **External API** - для клиентов, отправляющих запросы на взлом хэша
+    - **Internal API** - для воркеров, регистрирующихся и отправляющих результаты
+  version: 1.0.0
+  contact:
+    name: CrackHash Team
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: http://manager-service:8080
+    description: Manager service in Docker network
+
+tags:
+  - name: External API
+    description: API для клиентов - создание задач и получение результатов
+  - name: Internal API
+    description: API для воркеров - регистрация и отправка прогресса
+  - name: Health
+    description: Проверка работоспособности сервиса
+
+paths:
+  # ==================== External API ====================
+  /api/hash/crack:
+    post:
+      summary: Создать запрос на взлом хэша
+      description: |
+        Принимает MD5-хэш и максимальную длину искомого слова.
+        Создаёт задачу, разбивает её на подзадачи и распределяет между воркерами.
+        Возвращает идентификатор запроса для отслеживания статуса.
+      operationId: createCrackTask
+      tags:
+        - External API
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CrackRequest'
+            examples:
+              example1:
+                summary: Взлом хэша слова "abcd"
+                value:
+                  hash: "e2fc714c4727ee9395f324cd2e7f331f"
+                  maxLength: 4
+              example2:
+                summary: Взлом хэша слова "test"
+                value:
+                  hash: "098f6bcd4621d373cade4e832627b4f6"
+                  maxLength: 4
+      responses:
+        '200':
+          description: Запрос успешно создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrackResponse'
+              example:
+                requestId: "550e8400-e29b-41d4-a716-446655440000"
+        '400':
+          description: Неверный формат запроса
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                invalid_json:
+                  summary: Невалидный JSON
+                  value: "invalid character '}' looking for beginning of value"
+                missing_field:
+                  summary: Отсутствует обязательное поле
+                  value: "missing required field: hash"
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                no_workers:
+                  summary: Нет доступных воркеров
+                  value: "no available workers"
+                invalid_max_length:
+                  summary: Неверная максимальная длина
+                  value: "invalid max length"
+
+  /api/hash/status:
+    get:
+      summary: Получить статус выполнения запроса
+      description: |
+        Возвращает текущий статус выполнения запроса на взлом хэша.
+
+        Возможные статусы:
+        - `NOT_STARTED` - задача ещё не начата
+        - `IN_PROGRESS` - задача выполняется
+        - `READY` - задача завершена успешно
+        - `ERROR` - произошла ошибка (таймаут, недоступность воркеров и др.)
+      operationId: getTaskStatus
+      tags:
+        - External API
+      parameters:
+        - name: requestId
+          in: query
+          required: true
+          description: UUID запроса, полученный при создании
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: Статус запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskStatus'
+              examples:
+                not_started:
+                  summary: Задача не начата
+                  value:
+                    status: "NOT_STARTED"
+                    progress: 0
+                    data: null
+                in_progress:
+                  summary: Задача выполняется
+                  value:
+                    status: "IN_PROGRESS"
+                    progress: 65
+                    data: null
+                ready:
+                  summary: Задача завершена успешно
+                  value:
+                    status: "READY"
+                    progress: 100
+                    data: ["abcd"]
+                ready_multiple:
+                  summary: Найдено несколько совпадений
+                  value:
+                    status: "READY"
+                    progress: 100
+                    data: ["test", "1234"]
+                error:
+                  summary: Произошла ошибка
+                  value:
+                    status: "ERROR"
+                    progress: 50
+                    data: null
+        '400':
+          description: Неверный формат requestId
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                missing:
+                  summary: Отсутствует requestId
+                  value: "requestId is required"
+                invalid:
+                  summary: Невалидный UUID
+                  value: "invalid UUID format"
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "task not found"
+
+  # ==================== Internal API ====================
+  /api/hash/register-worker:
+    get:
+      summary: Зарегистрировать воркер
+      description: |
+        Регистрирует новый воркер в системе.
+        Воркер должен передать свой порт через заголовок `X-Worker-Port`.
+        IP-адрес воркера определяется автоматически из соединения.
+
+        После регистрации менеджер начинает периодически проверять здоровье воркера.
+        При падении воркера его задачи помечаются как ERROR.
+      operationId: registerWorker
+      tags:
+        - Internal API
+      parameters:
+        - name: X-Worker-Port
+          in: header
+          required: true
+          description: Порт HTTP-сервера воркера
+          schema:
+            type: string
+          example: "8080"
+      responses:
+        '200':
+          description: Воркер успешно зарегистрирован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterWorkerResponse'
+              example:
+                id: "123e4567-e89b-12d3-a456-426614174000"
+        '400':
+          description: Неверный запрос
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                missing_port:
+                  summary: Отсутствует заголовок X-Worker-Port
+                  value: "X-Worker-Port header is required"
+                invalid_addr:
+                  summary: Невалидный адрес
+                  value: "invalid remote address: missing port in address"
+
+  /api/tasks/progress:
+    post:
+      summary: Отправить прогресс выполнения задачи
+      description: |
+        Воркеры периодически отправляют обновления о прогрессе выполнения задач.
+        Менеджер агрегирует прогресс от всех воркеров для формирования общего статуса.
+
+        При завершении задачи воркер отправляет финальный результат с найденными совпадениями.
+      operationId: updateProgress
+      tags:
+        - Internal API
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskProgress'
+            examples:
+              in_progress:
+                summary: Задача выполняется
+                value:
+                  task_id: "550e8400-e29b-41d4-a716-446655440000"
+                  worker_id: "123e4567-e89b-12d3-a456-426614174000"
+                  status: "IN_PROGRESS"
+                  iterations_done: 5000
+                  total_iterations: 10000
+                  result: []
+              ready_with_result:
+                summary: Задача завершена с результатом
+                value:
+                  task_id: "550e8400-e29b-41d4-a716-446655440000"
+                  worker_id: "123e4567-e89b-12d3-a456-426614174000"
+                  status: "READY"
+                  iterations_done: 10000
+                  total_iterations: 10000
+                  result: ["abcd"]
+              ready_no_result:
+                summary: Задача завершена без результата
+                value:
+                  task_id: "550e8400-e29b-41d4-a716-446655440000"
+                  worker_id: "123e4567-e89b-12d3-a456-426614174000"
+                  status: "READY"
+                  iterations_done: 10000
+                  total_iterations: 10000
+                  result: []
+      responses:
+        '200':
+          description: Прогресс успешно обновлён
+        '400':
+          description: Неверный формат запроса
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "invalid request body"
+        '500':
+          description: Внутренняя ошибка сервера
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                unknown_worker:
+                  summary: Неизвестный воркер
+                  value: "worker not found: 123e4567-e89b-12d3-a456-426614174000"
+                unknown_task:
+                  summary: Неизвестная задача
+                  value: "task not found: 550e8400-e29b-41d4-a716-446655440000"
+
+  # ==================== Health ====================
+  /health:
+    get:
+      summary: Health check endpoint
+      description: Проверка работоспособности менеджера
+      operationId: healthCheck
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Менеджер работает нормально
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "OK"
+
+components:
+  schemas:
+    CrackRequest:
+      type: object
+      required:
+        - hash
+        - maxLength
+      properties:
+        hash:
+          type: string
+          description: MD5 хэш слова, которое нужно найти
+          pattern: '^[a-f0-9]{32}$'
+          example: "e2fc714c4727ee9395f324cd2e7f331f"
+        maxLength:
+          type: integer
+          description: Максимальная длина искомого слова (от 1 до maxLength включительно)
+          minimum: 1
+          maximum: 10
+          example: 4
+
+    CrackResponse:
+      type: object
+      required:
+        - requestId
+      properties:
+        requestId:
+          type: string
+          format: uuid
+          description: Уникальный идентификатор запроса для отслеживания статуса
+          example: "550e8400-e29b-41d4-a716-446655440000"
+
+    TaskStatus:
+      type: object
+      required:
+        - status
+        - progress
+        - data
+      properties:
+        status:
+          type: string
+          enum:
+            - NOT_STARTED
+            - IN_PROGRESS
+            - READY
+            - ERROR
+          description: |
+            Текущий статус выполнения запроса:
+            * `NOT_STARTED` - задача создана, но ещё не начата
+            * `IN_PROGRESS` - задача выполняется
+            * `READY` - задача завершена успешно
+            * `ERROR` - произошла ошибка (таймаут, недоступность воркеров и др.)
+          example: "IN_PROGRESS"
+        progress:
+          type: integer
+          description: Процент выполнения (0-100)
+          minimum: 0
+          maximum: 100
+          example: 65
+        data:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: Найденные слова, соответствующие хэшу (null если ещё не найдены)
+          example: ["abcd"]
+
+    RegisterWorkerResponse:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Уникальный идентификатор воркера в системе
+          example: "123e4567-e89b-12d3-a456-426614174000"
+
+    TaskProgress:
+      type: object
+      required:
+        - task_id
+        - worker_id
+        - status
+        - iterations_done
+        - total_iterations
+        - result
+      properties:
+        task_id:
+          type: string
+          format: uuid
+          description: Идентификатор задачи
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        worker_id:
+          type: string
+          format: uuid
+          description: Идентификатор воркера
+          example: "123e4567-e89b-12d3-a456-426614174000"
+        status:
+          type: string
+          enum:
+            - NOT_STARTED
+            - IN_PROGRESS
+            - READY
+            - ERROR
+          description: Статус выполнения задачи на этом воркере
+          example: "IN_PROGRESS"
+        iterations_done:
+          type: integer
+          description: Количество выполненных итераций
+          minimum: 0
+          example: 5000
+        total_iterations:
+          type: integer
+          description: Общее количество итераций для этого воркера
+          minimum: 0
+          example: 10000
+        result:
+          type: array
+          items:
+            type: string
+          description: Найденные строки, соответствующие хэшу
+          example: ["abcd"]
