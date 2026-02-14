@@ -13,10 +13,9 @@ import (
 )
 
 const (
-	pathCreateTask   = "%s/api/v1/tasks/"
-	pathDeleteTask   = "%s/api/v1/tasks/%s"
-	pathDoTask       = "%s/api/v1/tasks/%s/do"
-	pathTaskProgress = "%s/api/v1/tasks/%s/progress"
+	pathCreateTask = "%s/api/v1/tasks/"
+	pathDeleteTask = "%s/api/v1/tasks/%s"
+	pathDoTask     = "%s/api/v1/tasks/%s/do"
 )
 
 type workerClient struct {
@@ -67,33 +66,6 @@ func (c *workerClient) CreateTask(ctx context.Context, task *worker.Task) error 
 	}
 
 	return nil
-}
-
-func (c *workerClient) TaskProgress(ctx context.Context, taskID uuid.UUID) (*worker.TaskProgress, error) {
-	url := fmt.Sprintf(pathTaskProgress, c.baseURL, taskID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get task progress: %s", resp.Status)
-	}
-
-	var taskProgress worker.TaskProgress
-	if err := json.NewDecoder(resp.Body).Decode(&taskProgress); err != nil {
-		return nil, fmt.Errorf("failed to decode task progress: %w", err)
-	}
-
-	return &taskProgress, nil
 }
 
 func (c *workerClient) DoTask(ctx context.Context, taskID uuid.UUID) error {

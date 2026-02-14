@@ -2,8 +2,12 @@ http:
   port: 8080
 
 healthcheck:
-  period: 10s
-  max_tries: 5
+  period: 5s
+  max_tries: 3
 
 hash_cracker:
   alphabet: "abcdefghijklmnopqrstuvwxyz0123456789"
+
+logger:
+  level: INFO
+  is_json: true

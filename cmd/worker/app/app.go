@@ -7,11 +7,13 @@ import (
 	"os"
 	"runtime/debug"
 
+	"github.com/google/uuid"
 	"github.com/kestfor/CrackHash/cmd/worker/handler"
 	"github.com/kestfor/CrackHash/internal/services/worker"
 	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
 	"github.com/kestfor/CrackHash/internal/services/worker/registerer"
 	"github.com/kestfor/CrackHash/internal/services/worker/workerservice"
+	"github.com/kestfor/CrackHash/pkg/logging"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -69,23 +71,23 @@ func run(cfgPath string) error {
 		return err
 	}
 
-	slog.SetDefault(slog.With(
-		slog.String("service", "crackhash-worker"),
-		slog.Any("worker_id", id),
-	))
-
+	initLogger(cfg.Logger, id)
 	slog.Info("registered in manager")
 	slog.Info("initializing dependencies...")
 
-	// Set notifier's self port from HTTP config
-	cfg.Notifier.SelfPort = cfg.HTTP.Port
 	httpNotifier := notifier.NewHTTPNotifier(cfg.Notifier)
-	workerService := workerservice.NewService(cfg.Worker, httpNotifier)
+	workerService := workerservice.NewService(id, cfg.Worker, httpNotifier)
 	slog.Info("dependencies initialized")
 
 	initServer(cfg.HTTP, workerService)
 
 	return nil
+}
+
+func initLogger(cfg *logging.LoggerConfig, id uuid.UUID) {
+	logging.InitLogger(cfg,
+		slog.Any("worker_id", id),
+		slog.String("service", "worker"))
 }
 
 func initServer(httpServerConfig *HTTPServerConfig, workerService worker.Service) {
@@ -95,7 +97,6 @@ func initServer(httpServerConfig *HTTPServerConfig, workerService worker.Service
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/tasks/", workerHandler.HandleCreateTask)
-	mux.HandleFunc("GET /api/v1/tasks/{task_id}/progress", workerHandler.HandleGetProgress)
 	mux.HandleFunc("PUT /api/v1/tasks/{task_id}/do", workerHandler.HandleDoTask)
 	mux.HandleFunc("DELETE /api/v1/tasks/{task_id}", workerHandler.HandleDeleteTask)
 	mux.HandleFunc("GET /health", healthHandler)

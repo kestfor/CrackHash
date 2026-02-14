@@ -11,6 +11,7 @@ import (
 	"github.com/kestfor/CrackHash/internal/services/manager"
 	"github.com/kestfor/CrackHash/internal/services/manager/healthchecker"
 	"github.com/kestfor/CrackHash/internal/services/manager/service"
+	"github.com/kestfor/CrackHash/pkg/logging"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -35,11 +36,6 @@ func New() *cobra.Command {
 }
 
 func run(cfgPath string) error {
-
-	slog.SetDefault(slog.With(
-		slog.String("service", "crackhash-manager"),
-	))
-
 	slog.Info("parsing config...")
 
 	bytes, err := os.ReadFile(cfgPath)
@@ -54,6 +50,8 @@ func run(cfgPath string) error {
 		slog.Error("parse config failed", slog.Any("error", err))
 		return err
 	}
+
+	logging.InitLogger(cfg.Logger, slog.String("service", "manager"))
 
 	slog.Info("config parsed")
 
@@ -95,7 +93,7 @@ func initServer(httpServerConfig *HTTPConfig, managerService manager.Service) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/hash/crack", workerHandler.HandleCreateTask)
 	mux.HandleFunc("GET /api/hash/status", workerHandler.HandleGetTaskProgress)
-	mux.HandleFunc("POST /api/tasks/ready", workerHandler.HandleAddTaskResult)
+	mux.HandleFunc("POST /api/tasks/progress", workerHandler.HandleUpdateProgress)
 	mux.HandleFunc("GET /api/hash/register-worker", workerHandler.HandleRegisterWorker)
 	mux.HandleFunc("GET /health", healthHandler)
 

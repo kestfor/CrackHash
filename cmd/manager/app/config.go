@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kestfor/CrackHash/internal/services/manager/healthchecker"
+	"github.com/kestfor/CrackHash/pkg/logging"
 )
 
 type HTTPConfig struct {
@@ -24,6 +25,7 @@ type Config struct {
 	HTTP        *HTTPConfig                            `yaml:"http"`
 	Healthcheck *healthchecker.HTTPHealthCheckerConfig `yaml:"healthcheck"`
 	HashCracker *HashCrackerConfig                     `yaml:"hash_cracker"`
+	Logger      *logging.LoggerConfig                  `yaml:"logger"`
 }
 
 func (c *Config) Validate() error {
@@ -41,6 +43,10 @@ func (c *Config) Validate() error {
 
 	if c.HashCracker.Alphabet == "" {
 		return fmt.Errorf("hash_cracker alphabet is required")
+	}
+
+	if c.Logger == nil {
+		return fmt.Errorf("logger config is required")
 	}
 
 	return nil

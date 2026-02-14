@@ -8,5 +8,5 @@ import (
 
 type Worker interface {
 	Do(ctx context.Context, task *entities.Task)
-	Progress() *entities.TaskProgress
+	Cancel()
 }

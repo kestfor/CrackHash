@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/kestfor/CrackHash/internal/services/worker"
@@ -15,20 +14,17 @@ import (
 
 type HTTPNotifierConfig struct {
 	NotifyURL string `yaml:"notify_url"`
-	SelfPort  int    `yaml:"self_port"`
 }
 
 type httpNotifier struct {
-	url      string
-	selfPort int
-	client   *http.Client
+	url    string
+	client *http.Client
 }
 
 func NewHTTPNotifier(config *HTTPNotifierConfig) *httpNotifier {
 	return &httpNotifier{
-		url:      config.NotifyURL,
-		selfPort: config.SelfPort,
-		client:   &http.Client{},
+		url:    config.NotifyURL,
+		client: &http.Client{},
 	}
 }
 
@@ -47,7 +43,6 @@ func (n *httpNotifier) Notify(result *worker.TaskProgress) error {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Worker-Port", strconv.Itoa(n.selfPort))
 
 	resp, err := n.client.Do(req)
 	if err != nil {
@@ -59,7 +54,7 @@ func (n *httpNotifier) Notify(result *worker.TaskProgress) error {
 		return fmt.Errorf("notification failed with status: %s", resp.Status)
 	}
 
-	slog.Info("task result notification sent",
+	slog.Debug("progress notification sent",
 		slog.String("task_id", result.TaskID.String()),
 		slog.String("status", string(result.Status)),
 	)

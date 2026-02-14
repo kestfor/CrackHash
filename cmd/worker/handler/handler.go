@@ -19,42 +19,6 @@ func NewHandler(service worker.Service) *handler {
 	}
 }
 
-func (h *handler) HandleGetProgress(w http.ResponseWriter, r *http.Request) {
-	taskID := r.PathValue("task_id")
-
-	if taskID == "" {
-		http.Error(w, "task_id is required", http.StatusBadRequest)
-		return
-	}
-
-	taskUUID, err := uuid.Parse(taskID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	progress, err := h.service.TaskProgress(r.Context(), taskUUID)
-	if err != nil {
-		if errors.Is(err, worker.ErrTaskNotFound) {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(progress); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-
-}
-
 func (h *handler) HandleCreateTask(w http.ResponseWriter, r *http.Request) {
 	task := &worker.Task{}
 
@@ -79,7 +43,6 @@ func (h *handler) HandleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 
 	}
-
 	w.WriteHeader(http.StatusOK)
 }
 

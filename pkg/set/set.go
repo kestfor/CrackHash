@@ -1,13 +1,20 @@
 package set
 
+import (
+	"maps"
+	"slices"
+)
+
 type Set[T comparable] map[T]struct{}
 
 func New[T comparable]() Set[T] {
 	return make(map[T]struct{})
 }
 
-func (s Set[T]) Add(item T) {
-	s[item] = struct{}{}
+func (s Set[T]) Add(item ...T) {
+	for _, i := range item {
+		s[i] = struct{}{}
+	}
 }
 
 func (s Set[T]) Remove(item T) {
@@ -53,4 +60,8 @@ func (s Set[T]) Difference(other Set[T]) Set[T] {
 		}
 	}
 	return result
+}
+
+func (s Set[T]) Slice() []T {
+	return slices.Collect(maps.Keys(s))
 }

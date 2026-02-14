@@ -7,45 +7,139 @@ import (
 	"log/slog"
 	"math"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/kestfor/CrackHash/internal/services/worker"
 	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
 	workerinterface "github.com/kestfor/CrackHash/internal/services/worker/worker"
 )
 
 type workerImpl struct {
-	progress atomic.Pointer[worker.TaskProgress]
-	task     *worker.Task
-	result   *worker.TaskResult
-
-	notifiers []notifier.Notifier
+	workerID     uuid.UUID
+	task         *worker.Task
+	notifiers    []notifier.Notifier
+	progress     atomic.Pointer[worker.TaskProgress]
+	notifyPeriod time.Duration
+	cancel       context.CancelFunc
 }
 
 var _ workerinterface.Worker = (*workerImpl)(nil)
 
-func NewWorker(notifiers []notifier.Notifier) *workerImpl {
+func NewWorker(workerID uuid.UUID, notifiers []notifier.Notifier, notifyPeriod time.Duration) *workerImpl {
 	return &workerImpl{
-		progress:  atomic.Pointer[worker.TaskProgress]{},
-		notifiers: notifiers,
-		result:    &worker.TaskResult{},
+		workerID:     workerID,
+		notifyPeriod: notifyPeriod,
+		notifiers:    notifiers,
 	}
 }
 
 func (w *workerImpl) Do(ctx context.Context, task *worker.Task) {
 	w.task = task
-	w.progress.Store(&worker.TaskProgress{
-		TaskID:         task.TaskID,
-		IterationsDone: 0,
-		Status:         worker.StatusNotStarted,
-	})
+	ctx, w.cancel = context.WithCancel(ctx)
 
 	go func() {
 		w.do(ctx)
 	}()
 }
 
-func (w *workerImpl) Progress() *worker.TaskProgress {
-	return w.progress.Load()
+func (w *workerImpl) Cancel() {
+	w.cancel()
+}
+
+func (w *workerImpl) do(ctx context.Context) {
+	slog.Info("worker started processing",
+		slog.String("task_id", w.task.TaskID.String()),
+		slog.String("target_hash", w.task.TargetHash),
+		slog.String("iteration_alphabet", w.task.IterationAlphabet),
+		slog.Int("max_length", w.task.MaxLength),
+	)
+
+	wrkContext := &workerContext{}
+	wrkContext.SetStatus(worker.StatusInProgress)
+	wrkContext.TotalIterations = w.totalIterations()
+
+	failed := false
+
+	notifyContext, cancelNotify := context.WithCancel(ctx)
+	go w.backgroundNotify(notifyContext, wrkContext)
+
+	generator := WordGenerator(w.task.MaxLength, w.task.IterationAlphabet)
+	for word := range generator.Iterate() {
+		select {
+		case <-ctx.Done():
+			slog.Warn("task cancelled",
+				slog.Any("task_id", w.task.TaskID),
+				slog.String("reason", ctx.Err().Error()))
+			wrkContext.SetStatus(worker.StatusError)
+			failed = true
+			break
+		default:
+		}
+
+		hash := md5.Sum([]byte(word))
+		encoded := hex.EncodeToString(hash[:])
+
+		if w.task.TargetHash == encoded {
+			slog.Info("match found",
+				slog.String("task_id", w.task.TaskID.String()),
+				slog.String("word", word),
+			)
+			wrkContext.AddMatch(word)
+		}
+
+		wrkContext.IterationsDone.Add(1)
+	}
+
+	if !failed {
+		wrkContext.SetStatus(worker.StatusReady)
+	}
+
+	progress := w.contextToProgress(wrkContext)
+
+	slog.Info("worker finished processing",
+		slog.Any("task_id", w.task.TaskID),
+		slog.Any("matches_found", progress.Result),
+	)
+
+	cancelNotify() // stop background notification
+
+	w.notifyProgress(progress) // send final notification
+}
+
+func (w *workerImpl) backgroundNotify(ctx context.Context, wrkContext *workerContext) {
+
+	progress := w.contextToProgress(wrkContext)
+
+	ticker := time.NewTicker(w.notifyPeriod)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+
+			progress.IterationsDone = int(wrkContext.IterationsDone.Load())
+			progress.Result = wrkContext.Matches()
+			progress.Status = wrkContext.Status()
+
+			slog.Info("worker progress", slog.Any("progress", progress))
+
+			w.notifyProgress(progress)
+		}
+	}
+}
+
+func (w *workerImpl) notifyProgress(progress *worker.TaskProgress) {
+	for _, n := range w.notifiers {
+		if err := n.Notify(progress); err != nil {
+			slog.Warn("failed to notify subscriber",
+				slog.String("task_id", progress.TaskID.String()),
+				slog.Any("error", err),
+			)
+		}
+	}
 }
 
 func (w *workerImpl) totalIterations() int {
@@ -64,72 +158,13 @@ func (w *workerImpl) totalIterations() int {
 	return total
 }
 
-func (w *workerImpl) do(ctx context.Context) {
-	slog.Info("worker started processing",
-		slog.String("task_id", w.task.TaskID.String()),
-		slog.String("target_hash", w.task.TargetHash),
-		slog.String("iteration_alphabet", w.task.IterationAlphabet),
-		slog.Int("max_length", w.task.MaxLength),
-	)
-
-	progress := &worker.TaskProgress{
+func (w *workerImpl) contextToProgress(wrkContext *workerContext) *worker.TaskProgress {
+	return &worker.TaskProgress{
 		TaskID:          w.task.TaskID,
-		IterationsDone:  0,
-		Status:          worker.StatusInProgress,
-		TotalIterations: w.totalIterations(),
-		Result:          []string{},
-	}
-
-	w.progress.Store(progress)
-
-	iterationsDone := 0
-	matches := make([]string, 0)
-
-	progressFreq := 1000
-
-	generator := WordGenerator(w.task.MaxLength, w.task.IterationAlphabet)
-	for word := range generator.Iterate() {
-		select {
-		case <-ctx.Done():
-			slog.Warn("task cancelled", slog.String("task_id", w.task.TaskID.String()))
-			progress.Status = worker.StatusError
-			progress.Result = matches
-			w.progress.Store(progress)
-			return
-		default:
-		}
-
-		iterationsDone++
-
-		if iterationsDone%progressFreq == 0 {
-			progress.IterationsDone = iterationsDone
-			progress.Result = matches
-			w.progress.Store(progress)
-		}
-
-		hash := md5.Sum([]byte(word))
-		encoded := hex.EncodeToString(hash[:])
-
-		if w.task.TargetHash == encoded {
-			slog.Info("match found",
-				slog.String("task_id", w.task.TaskID.String()),
-				slog.String("word", word),
-			)
-			matches = append(matches, word)
-		}
-	}
-
-	progress.Status = worker.StatusReady
-	progress.IterationsDone = iterationsDone
-	progress.Result = matches
-	w.progress.Store(progress)
-
-	slog.Info("worker finished processing",
-		slog.String("task_id", w.task.TaskID.String()),
-		slog.Int("matches_found", len(matches)),
-	)
-
-	for _, n := range w.notifiers {
-		_ = n.Notify(progress)
+		WorkerID:        w.workerID,
+		IterationsDone:  int(wrkContext.IterationsDone.Load()),
+		TotalIterations: wrkContext.TotalIterations,
+		Result:          wrkContext.Matches(),
+		Status:          wrkContext.Status(),
 	}
 }

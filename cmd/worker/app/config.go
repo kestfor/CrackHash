@@ -2,10 +2,12 @@ package app
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/kestfor/CrackHash/internal/services/worker"
 	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
 	"github.com/kestfor/CrackHash/internal/services/worker/registerer"
+	"github.com/kestfor/CrackHash/pkg/logging"
 )
 
 type HTTPServerConfig struct {
@@ -17,6 +19,7 @@ type Config struct {
 	Registerer *registerer.HTTPRegistererConfig `yaml:"registerer"`
 	Notifier   *notifier.HTTPNotifierConfig     `yaml:"notifier"`
 	Worker     *worker.Config                   `yaml:"workers"`
+	Logger     *logging.LoggerConfig            `yaml:"logger"`
 }
 
 func (c *Config) Validate() error {
@@ -34,6 +37,14 @@ func (c *Config) Validate() error {
 
 	if c.Worker == nil {
 		return fmt.Errorf("worker config is required")
+	}
+
+	if c.Worker.NotifyPeriod == 0 {
+		c.Worker.NotifyPeriod = 5 * time.Second
+	}
+
+	if c.Logger == nil {
+		return fmt.Errorf("logger config is required")
 	}
 
 	return nil

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/kestfor/CrackHash/internal/services/worker"
@@ -14,28 +15,27 @@ import (
 )
 
 type workerService struct {
-	maxParallel int
+	workerID     uuid.UUID
+	maxParallel  int
+	notifyPeriod time.Duration
 
 	notifier notifier.Notifier
 	workers  map[uuid.UUID]worker2.Worker
-	tasks    map[uuid.UUID]*worker.Task
-	mu       sync.Mutex
+
+	// TODO lru clear
+	tasks map[uuid.UUID]*worker.Task
+	mu    sync.Mutex
 }
 
-func NewService(config *worker.Config, notifier notifier.Notifier) *workerService {
+func NewService(workerID uuid.UUID, config *worker.Config, notifier notifier.Notifier) *workerService {
 	return &workerService{
-		maxParallel: config.MaxParallel,
-		notifier:    notifier,
-		workers:     make(map[uuid.UUID]worker2.Worker),
-		tasks:       make(map[uuid.UUID]*worker.Task),
+		workerID:     workerID,
+		maxParallel:  config.MaxParallel,
+		notifyPeriod: config.NotifyPeriod,
+		notifier:     notifier,
+		workers:      make(map[uuid.UUID]worker2.Worker),
+		tasks:        make(map[uuid.UUID]*worker.Task),
 	}
-}
-
-// Notify implements Notifier
-// Used to know when task is done to remove it from the map
-func (s *workerService) Notify(result *worker.TaskProgress) error {
-	taskID := result.TaskID
-	return s.DeleteTask(context.Background(), taskID)
 }
 
 func (s *workerService) CreateTask(ctx context.Context, task *worker.Task) error {
@@ -71,32 +71,15 @@ func (s *workerService) DoTask(ctx context.Context, taskID uuid.UUID) error {
 
 	wrk, ok := s.workers[taskID]
 	if !ok {
-		wrk = impl.NewWorker([]notifier.Notifier{s, s.notifier})
+		wrk = impl.NewWorker(s.workerID, []notifier.Notifier{s.notifier}, s.notifyPeriod)
 		s.workers[taskID] = wrk
 
 		slog.Info("starting task execution", slog.String("task_id", taskID.String()))
-		// Use background context so task isn't cancelled when HTTP request ends
+		// Use background context so task isn't canceled when HTTP request ends
 		wrk.Do(context.Background(), task)
 	}
 
 	return nil
-}
-
-func (s *workerService) TaskProgress(ctx context.Context, taskID uuid.UUID) (*worker.TaskProgress, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	wrk, ok := s.workers[taskID]
-	if !ok {
-		return nil, worker.ErrTaskNotFound
-	}
-
-	progress := wrk.Progress()
-	if progress == nil {
-		return nil, fmt.Errorf("task not started")
-	}
-
-	return progress, nil
 }
 
 func (s *workerService) DeleteTask(ctx context.Context, taskID uuid.UUID) error {
@@ -104,6 +87,11 @@ func (s *workerService) DeleteTask(ctx context.Context, taskID uuid.UUID) error 
 	defer s.mu.Unlock()
 
 	slog.Info("deleting task", slog.String("task_id", taskID.String()))
+	wrk, ok := s.workers[taskID]
+	if ok {
+		wrk.Cancel()
+	}
+
 	delete(s.workers, taskID)
 	delete(s.tasks, taskID)
 	return nil

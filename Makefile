@@ -15,12 +15,12 @@ test:
 	@echo "Running tests..."
 	@CGO_ENABLED=1 go tool gotestsum -- --race --vet= --count=2 -p=4 -tags=test ./...
 
-WORKERS_NUM ?= 3
+WORKERS_NUM ?= 2
 service-start:
 	@cd docker && docker compose up -d --build --scale worker-service=$(WORKERS_NUM)
 
 service-stop:
-	@docker stop $(docker ps --filter name=docker-worker-service -aq)
+	@cd docker && docker compose stop
 
 
 

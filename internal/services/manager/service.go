@@ -15,6 +15,6 @@ var ErrInvalidMaxLength = errors.New("max length must be greater than 0")
 type Service interface {
 	SubmitTask(ctx context.Context, targetHash string, maxLength int) (uuid.UUID, error)
 	AddWorker(ctx context.Context, workerAddress string) uuid.UUID
-	AddTaskResult(ctx context.Context, workerAddress string, result *worker.TaskProgress) error
+	UpdateProgress(ctx context.Context, progress *worker.TaskProgress) error
 	TaskProgress(ctx context.Context, taskID uuid.UUID) (*TaskStatus, error)
 }
