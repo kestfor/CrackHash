@@ -77,6 +77,8 @@ func run(cfgPath string) error {
 	slog.Info("registered in manager")
 	slog.Info("initializing dependencies...")
 
+	// Set notifier's self port from HTTP config
+	cfg.Notifier.SelfPort = cfg.HTTP.Port
 	httpNotifier := notifier.NewHTTPNotifier(cfg.Notifier)
 	workerService := workerservice.NewService(cfg.Worker, httpNotifier)
 	slog.Info("dependencies initialized")

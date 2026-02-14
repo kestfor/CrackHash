@@ -33,10 +33,43 @@ func TestSplitAlphabet(t *testing.T) {
 			want:     []string{"abcd"},
 		},
 		{
-			name:     "split alphabet into 3 parts with remainder",
+			name:     "split alphabet into 3 parts with remainder (duplicates allowed)",
 			alphabet: "abcd",
 			parts:    3,
-			want:     []string{"ab", "c", "d"},
+			want:     []string{"ab", "cd", "ab"}, // ceil(4/3)=2, last part wraps around
+		},
+		{
+			name:     "split 36 chars into 10 parts",
+			alphabet: "abcdefghijklmnopqrstuvwxyz0123456789",
+			parts:    10,
+			want: []string{
+				"abcd", "efgh", "ijkl", "mnop", "qrst",
+				"uvwx", "yz01", "2345", "6789", "abcd",
+			}, // ceil(36/10)=4
+		},
+		{
+			name:     "split 9 chars into 10 parts (more parts than chars)",
+			alphabet: "abcdefghi",
+			parts:    10,
+			want:     []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "a"}, // ceil(9/10)=1
+		},
+		{
+			name:     "empty alphabet",
+			alphabet: "",
+			parts:    3,
+			want:     []string{},
+		},
+		{
+			name:     "zero parts",
+			alphabet: "abcd",
+			parts:    0,
+			want:     []string{},
+		},
+		{
+			name:     "split 26 chars into 5 parts",
+			alphabet: "abcdefghijklmnopqrstuvwxyz",
+			parts:    5,
+			want:     []string{"abcdef", "ghijkl", "mnopqr", "stuvwx", "yz"}, // ceil(26/5)=6
 		},
 	}
 

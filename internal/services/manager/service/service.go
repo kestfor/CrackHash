@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/google/uuid"
@@ -20,7 +21,7 @@ type managerService struct {
 
 	healthCheckerProvider HealthCheckerProvider
 
-	m       sync.Mutex
+	m       sync.RWMutex
 	workers map[uuid.UUID]workerclient.WorkerClient // workerID -> clients
 	tasks   map[uuid.UUID][]uuid.UUID               // taskID -> workers
 
@@ -35,6 +36,8 @@ func NewService(alphabet string, healthCheckerProvider HealthCheckerProvider) *m
 		healthCheckerProvider: healthCheckerProvider,
 		workers:               make(map[uuid.UUID]workerclient.WorkerClient),
 		tasks:                 make(map[uuid.UUID][]uuid.UUID),
+		addrToID:              make(map[string]uuid.UUID),
+		ready:                 make(map[uuid.UUID]map[uuid.UUID]*worker.TaskProgress),
 	}
 }
 
@@ -43,27 +46,39 @@ func (s *managerService) AddWorker(ctx context.Context, workerAddress string) uu
 	defer s.m.Unlock()
 
 	workerID := uuid.New()
-	s.workers[workerID] = workerclient.NewWorkerClient(workerAddress)
+	client := workerclient.NewWorkerClient(workerAddress)
+	s.workers[workerID] = client
 	s.addrToID[workerAddress] = workerID
-	go s.checkWorker(ctx, workerID)
+
+	slog.Info("worker registered",
+		slog.String("worker_id", workerID.String()),
+		slog.String("worker_address", workerAddress),
+	)
+
+	go s.checkWorker(ctx, workerID, client)
 	return workerID
 }
 
-// blocks until failure
-func (s *managerService) checkWorker(ctx context.Context, workerID uuid.UUID) {
-	client := s.workers[workerID]
+// checkWorker blocks until worker failure, then removes it
+func (s *managerService) checkWorker(ctx context.Context, workerID uuid.UUID, client workerclient.WorkerClient) {
 	healthChecker := s.healthCheckerProvider(client.Address())
-	healthChecker.NotifyFailure()
+	healthChecker.NotifyFailure() // blocks until failure
+
+	slog.Warn("worker health check failed, removing worker",
+		slog.String("worker_id", workerID.String()),
+	)
+
 	s.m.Lock()
 	defer s.m.Unlock()
-	delete(s.workers, workerID)
 
-	// mark this worker tasks as failed if it was not done
+	delete(s.workers, workerID)
+	delete(s.addrToID, client.Address())
+
+	// mark this worker's tasks as failed if not already done
 	for taskID, workers := range s.tasks {
 		for _, wID := range workers {
 			if wID == workerID {
-				_, ok := s.ready[taskID]
-				if !ok {
+				if _, ok := s.ready[taskID]; !ok {
 					s.ready[taskID] = make(map[uuid.UUID]*worker.TaskProgress)
 				}
 
@@ -76,18 +91,22 @@ func (s *managerService) checkWorker(ctx context.Context, workerID uuid.UUID) {
 			}
 		}
 	}
-
 }
 
 func (s *managerService) TaskProgress(ctx context.Context, taskID uuid.UUID) (*manager.TaskStatus, error) {
-	ready, doneWorkers, err := s.collectReadyResults(ctx, taskID)
+	ready, doneWorkers, err := s.collectReadyResults(taskID)
 	if err != nil {
 		return nil, err
 	}
 
 	progresses, err := s.collectInProgress(ctx, taskID, doneWorkers)
 	if err != nil {
-		return nil, err
+		// If we have ready results, don't fail just because we can't query active workers
+		if err == manager.ErrTaskNotFound && len(ready) > 0 {
+			progresses = []*worker.TaskProgress{}
+		} else {
+			return nil, err
+		}
 	}
 
 	progresses = append(progresses, ready...)
@@ -102,19 +121,25 @@ func (s *managerService) AddTaskResult(ctx context.Context, workerAddress string
 
 	workerID, ok := s.addrToID[workerAddress]
 	if !ok {
-		return fmt.Errorf("worker not found")
+		return fmt.Errorf("worker not found for address: %s", workerAddress)
 	}
 
 	if result.Status != worker.StatusReady {
-		return fmt.Errorf("task not done")
+		return fmt.Errorf("task not done, status: %s", result.Status)
 	}
 
 	taskID := result.TaskID
-	_, ok = s.ready[taskID]
-	if !ok {
+	if _, ok := s.ready[taskID]; !ok {
 		s.ready[taskID] = make(map[uuid.UUID]*worker.TaskProgress)
 	}
 	s.ready[taskID][workerID] = result
+
+	slog.Info("task result received",
+		slog.String("task_id", taskID.String()),
+		slog.String("worker_id", workerID.String()),
+		slog.Int("results_count", len(result.Result)),
+	)
+
 	return nil
 }
 
@@ -122,71 +147,98 @@ func (s *managerService) SubmitTask(ctx context.Context, targetHash string, maxL
 	s.m.Lock()
 	defer s.m.Unlock()
 
-	taskID := uuid.New()
 	workersNum := len(s.workers)
-	busyWorkers := set.New[uuid.UUID]()
-
-	for len(busyWorkers) < workersNum {
-
-		availableWorkers := set.New[uuid.UUID]()
-		parts := manager.SplitAlphabet(s.alphabet, workersNum)
-		partNum := 0
-		failed := false
-
-		for wID, client := range s.workers {
-			part := parts[partNum]
-
-			task := &worker.Task{
-				TaskID:            taskID,
-				TargetHash:        targetHash,
-				IterationAlphabet: part,
-				MaxLength:         maxLength,
-			}
-
-			err := client.CreateTask(ctx, task)
-			if err != nil {
-				failed = true
-
-				busyWorkers.Add(wID)
-
-				// clear created tasks
-				for wID := range availableWorkers {
-					client := s.workers[wID]
-					_ = client.DeleteTask(ctx, taskID)
-				}
-
-				break
-			}
-
-			availableWorkers.Add(wID)
-			partNum++
-		}
-
-		if !failed {
-			for wID := range availableWorkers {
-				s.tasks[taskID] = append(s.tasks[taskID], wID)
-				client := s.workers[wID]
-				_ = client.DoTask(ctx, taskID)
-			}
-
-			return taskID, nil
-		}
-
+	if workersNum == 0 {
+		return uuid.Nil, manager.ErrNoAvailableWorkers
 	}
 
-	return uuid.Nil, manager.ErrNoAvailableWorkers
+	if maxLength <= 0 {
+		return uuid.Nil, manager.ErrInvalidMaxLength
+	}
+
+	slog.Info("submitting task",
+		slog.String("target_hash", targetHash),
+		slog.Int("max_length", maxLength),
+		slog.Int("workers_count", workersNum),
+	)
+
+	taskID := uuid.New()
+	parts := manager.SplitAlphabet(s.alphabet, workersNum)
+
+	availableWorkers := make([]uuid.UUID, 0, workersNum)
+	partNum := 0
+
+	for wID, client := range s.workers {
+		if partNum >= len(parts) {
+			break
+		}
+
+		part := parts[partNum]
+		if part == "" {
+			partNum++
+			continue
+		}
+
+		task := &worker.Task{
+			TaskID:            taskID,
+			TargetHash:        targetHash,
+			IterationAlphabet: part,
+			MaxLength:         maxLength,
+		}
+
+		err := client.CreateTask(ctx, task)
+		if err != nil {
+			slog.Error("failed to create task on worker",
+				slog.String("worker_id", wID.String()),
+				slog.Any("error", err),
+			)
+			// Clean up created tasks on other workers
+			for _, createdWID := range availableWorkers {
+				if c, ok := s.workers[createdWID]; ok {
+					_ = c.DeleteTask(ctx, taskID)
+				}
+			}
+			return uuid.Nil, fmt.Errorf("failed to create task on worker %s: %w", wID.String(), err)
+		}
+
+		availableWorkers = append(availableWorkers, wID)
+		partNum++
+	}
+
+	if len(availableWorkers) == 0 {
+		return uuid.Nil, manager.ErrNoAvailableWorkers
+	}
+
+	// Start all tasks
+	for _, wID := range availableWorkers {
+		s.tasks[taskID] = append(s.tasks[taskID], wID)
+		client := s.workers[wID]
+		if err := client.DoTask(ctx, taskID); err != nil {
+			slog.Error("failed to start task on worker",
+				slog.String("worker_id", wID.String()),
+				slog.Any("error", err),
+			)
+		}
+	}
+
+	slog.Info("task submitted successfully",
+		slog.String("task_id", taskID.String()),
+		slog.Int("workers_assigned", len(availableWorkers)),
+	)
+
+	return taskID, nil
 }
 
-func (s *managerService) collectReadyResults(ctx context.Context, taskID uuid.UUID) ([]*worker.TaskProgress, set.Set[uuid.UUID], error) {
-	s.m.Lock()
-	defer s.m.Unlock()
+func (s *managerService) collectReadyResults(taskID uuid.UUID) ([]*worker.TaskProgress, set.Set[uuid.UUID], error) {
+	s.m.RLock()
+	defer s.m.RUnlock()
 
 	doneWorkers := set.New[uuid.UUID]()
-	readyParts, ok := s.ready[taskID]
 	progresses := make([]*worker.TaskProgress, 0)
 
+	readyParts, ok := s.ready[taskID]
 	if !ok {
-		return nil, nil, nil
+		return progresses, doneWorkers, nil
 	}
 
 	for workerID, result := range readyParts {
@@ -198,26 +250,40 @@ func (s *managerService) collectReadyResults(ctx context.Context, taskID uuid.UU
 }
 
 func (s *managerService) collectInProgress(ctx context.Context, taskID uuid.UUID, readyWorkers set.Set[uuid.UUID]) ([]*worker.TaskProgress, error) {
-	s.m.Lock()
-	defer s.m.Unlock()
-
+	s.m.RLock()
 	workerIDs, ok := s.tasks[taskID]
 	if !ok {
+		s.m.RUnlock()
 		return nil, manager.ErrTaskNotFound
 	}
-	var progresses []*worker.TaskProgress
 
+	type workerInfo struct {
+		id     uuid.UUID
+		client workerclient.WorkerClient
+	}
+
+	workersToQuery := make([]workerInfo, 0)
 	for _, wrkID := range workerIDs {
-		if readyWorkers.Contains(wrkID) {
+		if readyWorkers != nil && readyWorkers.Contains(wrkID) {
 			continue
 		}
 		client, ok := s.workers[wrkID]
 		if !ok {
-			return nil, fmt.Errorf("client for worker with id %s not found", wrkID)
+			continue
 		}
-		progress, err := client.TaskProgress(ctx, taskID)
+		workersToQuery = append(workersToQuery, workerInfo{id: wrkID, client: client})
+	}
+	s.m.RUnlock()
+
+	var progresses []*worker.TaskProgress
+	for _, w := range workersToQuery {
+		progress, err := w.client.TaskProgress(ctx, taskID)
 		if err != nil {
-			return nil, err
+			slog.Error("failed to get task progress from worker",
+				slog.String("worker_id", w.id.String()),
+				slog.Any("error", err),
+			)
+			continue
 		}
 		progresses = append(progresses, progress)
 	}
@@ -229,19 +295,28 @@ func mergeProgress(progresses ...*worker.TaskProgress) *manager.TaskStatus {
 	mergedProgress := &manager.TaskStatus{
 		Progress: 0,
 		Status:   worker.StatusNotStarted,
-		Data:     nil,
+		Data:     []string{},
+	}
+
+	if len(progresses) == 0 {
+		return mergedProgress
 	}
 
 	totalIterations := 0
+	iterationsDone := 0
 	failed := false
 	allDone := true
 
 	for _, progress := range progresses {
-		mergedProgress.Status = progress.Status
 		totalIterations += progress.TotalIterations
-		mergedProgress.Progress += progress.IterationsDone
+		iterationsDone += progress.IterationsDone
 
-		if progress.Status == worker.StatusInProgress {
+		// Collect results
+		if progress.Result != nil {
+			mergedProgress.Data = append(mergedProgress.Data, progress.Result...)
+		}
+
+		if progress.Status != worker.StatusReady {
 			allDone = false
 		}
 
@@ -258,7 +333,11 @@ func mergeProgress(progresses ...*worker.TaskProgress) *manager.TaskStatus {
 		mergedProgress.Status = worker.StatusInProgress
 	}
 
-	mergedProgress.Progress = int(float64(mergedProgress.Progress) / float64(totalIterations) * 100)
-	return mergedProgress
+	if totalIterations > 0 {
+		mergedProgress.Progress = int(float64(iterationsDone) / float64(totalIterations) * 100)
+	} else {
+		mergedProgress.Progress = 0
+	}
 
+	return mergedProgress
 }

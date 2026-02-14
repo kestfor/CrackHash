@@ -3,6 +3,7 @@ package workerservice
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/google/uuid"
@@ -26,6 +27,7 @@ func NewService(config *worker.Config, notifier notifier.Notifier) *workerServic
 		maxParallel: config.MaxParallel,
 		notifier:    notifier,
 		workers:     make(map[uuid.UUID]worker2.Worker),
+		tasks:       make(map[uuid.UUID]*worker.Task),
 	}
 }
 
@@ -37,17 +39,22 @@ func (s *workerService) Notify(result *worker.TaskProgress) error {
 }
 
 func (s *workerService) CreateTask(ctx context.Context, task *worker.Task) error {
-	if len(s.workers) >= s.maxParallel {
-		return fmt.Errorf("max parallel tasks reached")
+	if err := validateTask(task); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if len(s.workers) >= s.maxParallel {
+		return fmt.Errorf("max parallel tasks reached")
+	}
+
 	if _, ok := s.tasks[task.TaskID]; ok {
 		return worker.ErrTaskAlreadyExists
 	}
 
+	slog.Info("task created", slog.String("task_id", task.TaskID.String()))
 	s.tasks[task.TaskID] = task
 
 	return nil
@@ -67,9 +74,9 @@ func (s *workerService) DoTask(ctx context.Context, taskID uuid.UUID) error {
 		wrk = impl.NewWorker([]notifier.Notifier{s, s.notifier})
 		s.workers[taskID] = wrk
 
-		go func() {
-			wrk.Do(ctx, task)
-		}()
+		slog.Info("starting task execution", slog.String("task_id", taskID.String()))
+		// Use background context so task isn't cancelled when HTTP request ends
+		wrk.Do(context.Background(), task)
 	}
 
 	return nil
@@ -86,7 +93,6 @@ func (s *workerService) TaskProgress(ctx context.Context, taskID uuid.UUID) (*wo
 
 	progress := wrk.Progress()
 	if progress == nil {
-		// сомнительно, но безопасно
 		return nil, fmt.Errorf("task not started")
 	}
 
@@ -96,6 +102,8 @@ func (s *workerService) TaskProgress(ctx context.Context, taskID uuid.UUID) (*wo
 func (s *workerService) DeleteTask(ctx context.Context, taskID uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	slog.Info("deleting task", slog.String("task_id", taskID.String()))
 	delete(s.workers, taskID)
 	delete(s.tasks, taskID)
 	return nil

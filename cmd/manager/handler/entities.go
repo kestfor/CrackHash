@@ -4,9 +4,9 @@ import "github.com/google/uuid"
 
 type CreateTaskRequest struct {
 	Hash      string `json:"hash"`
-	MaxLength int    `json:"max_length"`
+	MaxLength int    `json:"maxLength"`
 }
 
 type CreateTaskResponse struct {
-	TaskID uuid.UUID `json:"task_id"`
+	RequestID uuid.UUID `json:"requestId"`
 }

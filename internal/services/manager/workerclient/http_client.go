@@ -6,54 +6,60 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/kestfor/CrackHash/internal/services/worker"
 )
 
 const (
-	pathCreateTask   = "%s/tasks"
-	pathDeleteTask   = "%s/tasks/%s"
-	pathDoTask       = "%s/tasks/%s/do"
-	pathTaskProgress = "%s/tasks/%s/progress"
+	pathCreateTask   = "%s/api/v1/tasks/"
+	pathDeleteTask   = "%s/api/v1/tasks/%s"
+	pathDoTask       = "%s/api/v1/tasks/%s/do"
+	pathTaskProgress = "%s/api/v1/tasks/%s/progress"
 )
 
 type workerClient struct {
-	baseURL    string
+	address    string // raw address without scheme (e.g., "localhost:8081")
+	baseURL    string // full URL with scheme (e.g., "http://localhost:8081")
 	httpClient *http.Client
 }
 
 func (c *workerClient) Address() string {
-	return c.baseURL
+	return c.address
 }
 
-func NewWorkerClient(baseURL string) *workerClient {
+func NewWorkerClient(address string) *workerClient {
+	baseURL := address
+	// Ensure baseURL has http:// scheme
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		baseURL = "http://" + address
+	}
 	return &workerClient{
+		address:    address,
 		baseURL:    baseURL,
 		httpClient: &http.Client{},
 	}
 }
 
 func (c *workerClient) CreateTask(ctx context.Context, task *worker.Task) error {
-
 	url := fmt.Sprintf(pathCreateTask, c.baseURL)
 	data, err := json.Marshal(task)
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to marshal task: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(data))
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to send request: %w", err)
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -64,29 +70,27 @@ func (c *workerClient) CreateTask(ctx context.Context, task *worker.Task) error 
 }
 
 func (c *workerClient) TaskProgress(ctx context.Context, taskID uuid.UUID) (*worker.TaskProgress, error) {
-
 	url := fmt.Sprintf(pathTaskProgress, c.baseURL, taskID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to create task: %s", resp.Status)
+		return nil, fmt.Errorf("failed to get task progress: %s", resp.Status)
 	}
 
 	var taskProgress worker.TaskProgress
 	if err := json.NewDecoder(resp.Body).Decode(&taskProgress); err != nil {
-		return nil, fmt.Errorf("failed to decode task progress: %s", err)
+		return nil, fmt.Errorf("failed to decode task progress: %w", err)
 	}
 
 	return &taskProgress, nil
@@ -96,16 +100,15 @@ func (c *workerClient) DoTask(ctx context.Context, taskID uuid.UUID) error {
 	url := fmt.Sprintf(pathDoTask, c.baseURL, taskID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, nil)
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to send request: %w", err)
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -119,16 +122,15 @@ func (c *workerClient) DeleteTask(ctx context.Context, taskID uuid.UUID) error {
 	url := fmt.Sprintf(pathDeleteTask, c.baseURL, taskID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to send request: %w", err)
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {

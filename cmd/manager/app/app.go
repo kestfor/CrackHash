@@ -96,6 +96,7 @@ func initServer(httpServerConfig *HTTPConfig, managerService manager.Service) {
 	mux.HandleFunc("POST /api/hash/crack", workerHandler.HandleCreateTask)
 	mux.HandleFunc("GET /api/hash/status", workerHandler.HandleGetTaskProgress)
 	mux.HandleFunc("POST /api/tasks/ready", workerHandler.HandleAddTaskResult)
+	mux.HandleFunc("GET /api/hash/register-worker", workerHandler.HandleRegisterWorker)
 	mux.HandleFunc("GET /health", healthHandler)
 
 	wrappedMux := recoverMiddleware(mux)

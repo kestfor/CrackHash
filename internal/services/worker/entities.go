@@ -5,7 +5,7 @@ import "github.com/google/uuid"
 const (
 	StatusNotStarted Status = "NOT_STARTED"
 	StatusInProgress Status = "IN_PROGRESS"
-	StatusReady      Status = "DONE"
+	StatusReady      Status = "READY"
 	StatusError      Status = "ERROR"
 )
 

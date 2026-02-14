@@ -1,11 +1,12 @@
 http:
-  port: 8080
+  port: 8081
 
 registerer:
-  register_url: "http://manager-service:8080/api/v1/manager/register"
+  register_url: "http://localhost:8080/api/hash/register-worker"
+  self_port: 8081
 
 notifier:
-  notify_url: "http://manager-service:8080/api/v1/manager/notify"
+  notify_url: "http://localhost:8080/api/tasks/ready"
 
 workers:
   max_parallel: 10

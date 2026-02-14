@@ -10,6 +10,7 @@ import (
 
 var ErrTaskNotFound = errors.New("task not found")
 var ErrNoAvailableWorkers = errors.New("no available workers")
+var ErrInvalidMaxLength = errors.New("max length must be greater than 0")
 
 type Service interface {
 	SubmitTask(ctx context.Context, targetHash string, maxLength int) (uuid.UUID, error)

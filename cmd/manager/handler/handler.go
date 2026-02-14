@@ -2,6 +2,8 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -35,23 +37,19 @@ func (h *managerHTTPHandler) HandleCreateTask(w http.ResponseWriter, r *http.Req
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(CreateTaskResponse{TaskID: taskID}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(CreateTaskResponse{RequestID: taskID})
 }
 
 func (h *managerHTTPHandler) HandleGetTaskProgress(w http.ResponseWriter, r *http.Request) {
-	taskID := r.URL.Query().Get("task_id")
+	requestID := r.URL.Query().Get("requestId")
 
-	if taskID == "" {
-		http.Error(w, "task_id is required", http.StatusBadRequest)
+	if requestID == "" {
+		http.Error(w, "requestId is required", http.StatusBadRequest)
 		return
 	}
 
-	parsedID, err := uuid.Parse(taskID)
+	parsedID, err := uuid.Parse(requestID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -64,12 +62,8 @@ func (h *managerHTTPHandler) HandleGetTaskProgress(w http.ResponseWriter, r *htt
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(progress); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(progress)
 }
 
 func (h *managerHTTPHandler) HandleAddTaskResult(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +75,19 @@ func (h *managerHTTPHandler) HandleAddTaskResult(w http.ResponseWriter, r *http.
 		return
 	}
 
-	workerAddr := r.Host
+	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid remote address: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	workerPort := r.Header.Get("X-Worker-Port")
+	if workerPort == "" {
+		http.Error(w, "X-Worker-Port header is required", http.StatusBadRequest)
+		return
+	}
+
+	workerAddr := net.JoinHostPort(remoteIP, workerPort)
 
 	if err := h.managerService.AddTaskResult(r.Context(), workerAddr, taskResult); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -89,4 +95,26 @@ func (h *managerHTTPHandler) HandleAddTaskResult(w http.ResponseWriter, r *http.
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *managerHTTPHandler) HandleRegisterWorker(w http.ResponseWriter, r *http.Request) {
+	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid remote address: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	workerPort := r.Header.Get("X-Worker-Port")
+	if workerPort == "" {
+		http.Error(w, "X-Worker-Port header is required", http.StatusBadRequest)
+		return
+	}
+
+	workerAddr := net.JoinHostPort(remoteIP, workerPort)
+
+	workerID := h.managerService.AddWorker(r.Context(), workerAddr)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": workerID})
 }

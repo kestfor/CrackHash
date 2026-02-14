@@ -6,4 +6,4 @@ healthcheck:
   max_tries: 5
 
 hash_cracker:
-  alphabet: "abcd"
+  alphabet: "abcdefghijklmnopqrstuvwxyz0123456789"
