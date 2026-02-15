@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 
@@ -37,8 +38,9 @@ func (h *managerHTTPHandler) HandleCreateTask(w http.ResponseWriter, r *http.Req
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(CreateTaskResponse{RequestID: taskID})
+	if err := json.NewEncoder(w).Encode(CreateTaskResponse{RequestID: taskID}); err != nil {
+		slog.Warn("failed to encode response", slog.Any("error", err))
+	}
 }
 
 func (h *managerHTTPHandler) HandleGetTaskProgress(w http.ResponseWriter, r *http.Request) {
@@ -62,8 +64,9 @@ func (h *managerHTTPHandler) HandleGetTaskProgress(w http.ResponseWriter, r *htt
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(progress)
+	if err := json.NewEncoder(w).Encode(progress); err != nil {
+		slog.Warn("failed to encode response", slog.Any("error", err))
+	}
 }
 
 // HandleUpdateProgress receives progress updates from workers (push model)
@@ -102,6 +105,7 @@ func (h *managerHTTPHandler) HandleRegisterWorker(w http.ResponseWriter, r *http
 	workerID := h.managerService.AddWorker(r.Context(), workerAddr)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(RegisterWorkerResponse{WorkerID: workerID})
+	if err := json.NewEncoder(w).Encode(RegisterWorkerResponse{WorkerID: workerID}); err != nil {
+		slog.Warn("failed to encode response", slog.Any("error", err))
+	}
 }
