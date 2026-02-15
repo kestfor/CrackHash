@@ -43,7 +43,6 @@ func (r *httpRegisterer) Register() (uuid.UUID, error) {
 		return uuid.Nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Send worker's listening port in header so manager can construct full address
 	req.Header.Set("X-Worker-Port", strconv.Itoa(r.config.SelfPort))
 
 	slog.Info("registering worker",

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kestfor/CrackHash/internal/services/worker"
 	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
 	"github.com/kestfor/CrackHash/internal/services/worker/registerer"
+	"github.com/kestfor/CrackHash/internal/services/worker/workerservice"
 	"github.com/kestfor/CrackHash/pkg/logging"
 )
 
@@ -18,7 +18,7 @@ type Config struct {
 	HTTP       *HTTPServerConfig                `yaml:"http"`
 	Registerer *registerer.HTTPRegistererConfig `yaml:"registerer"`
 	Notifier   *notifier.HTTPNotifierConfig     `yaml:"notifier"`
-	Worker     *worker.Config                   `yaml:"workers"`
+	Worker     *workerservice.Config            `yaml:"workers"`
 	Logger     *logging.LoggerConfig            `yaml:"logger"`
 }
 

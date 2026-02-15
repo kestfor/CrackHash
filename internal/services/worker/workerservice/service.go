@@ -8,37 +8,39 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kestfor/CrackHash/internal/services/worker"
-	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
-	worker2 "github.com/kestfor/CrackHash/internal/services/worker/worker"
-	"github.com/kestfor/CrackHash/internal/services/worker/worker/impl"
+	expirable "github.com/hashicorp/golang-lru/v2/expirable"
+	entities "github.com/kestfor/CrackHash/internal/services/worker"
+	worker "github.com/kestfor/CrackHash/internal/services/worker/worker"
 )
 
-type workerService struct {
-	workerID     uuid.UUID
-	maxParallel  int
-	notifyPeriod time.Duration
-
-	notifier notifier.Notifier
-	workers  map[uuid.UUID]worker2.Worker
-
-	// TODO lru clear
-	tasks map[uuid.UUID]*worker.Task
-	mu    sync.Mutex
+type Fabric interface {
+	NewWorker() worker.Worker
 }
 
-func NewService(workerID uuid.UUID, config *worker.Config, notifier notifier.Notifier) *workerService {
+type workerService struct {
+	maxParallel  int
+	workerFabric Fabric
+
+	mu           sync.Mutex
+	tasksContext *expirable.LRU[uuid.UUID, taskExecutionContext]
+}
+
+type taskExecutionContext struct {
+	executionContext context.Context
+	task             *entities.Task
+	worker           worker.Worker
+}
+
+func NewService(config *Config, workerFabric Fabric) *workerService {
 	return &workerService{
-		workerID:     workerID,
 		maxParallel:  config.MaxParallel,
-		notifyPeriod: config.NotifyPeriod,
-		notifier:     notifier,
-		workers:      make(map[uuid.UUID]worker2.Worker),
-		tasks:        make(map[uuid.UUID]*worker.Task),
+		workerFabric: workerFabric,
+
+		tasksContext: expirable.NewLRU[uuid.UUID, taskExecutionContext](config.MaxParallel, nil, time.Minute*5),
 	}
 }
 
-func (s *workerService) CreateTask(ctx context.Context, task *worker.Task) error {
+func (s *workerService) CreateTask(ctx context.Context, task *entities.Task) error {
 	if err := validateTask(task); err != nil {
 		return err
 	}
@@ -46,16 +48,19 @@ func (s *workerService) CreateTask(ctx context.Context, task *worker.Task) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if len(s.workers) >= s.maxParallel {
+	if s.tasksContext.Len() >= s.maxParallel {
 		return fmt.Errorf("max parallel tasks reached")
 	}
 
-	if _, ok := s.tasks[task.TaskID]; ok {
-		return worker.ErrTaskAlreadyExists
+	if s.tasksContext.Contains(task.TaskID) {
+		return entities.ErrTaskAlreadyExists
 	}
 
+	s.tasksContext.Add(task.TaskID, taskExecutionContext{
+		task: task,
+	})
+
 	slog.Info("task created", slog.String("task_id", task.TaskID.String()))
-	s.tasks[task.TaskID] = task
 
 	return nil
 }
@@ -64,19 +69,22 @@ func (s *workerService) DoTask(ctx context.Context, taskID uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	task, ok := s.tasks[taskID]
+	taskContext, ok := s.tasksContext.Get(taskID)
 	if !ok {
-		return worker.ErrTaskNotFound
+		return entities.ErrTaskNotFound
 	}
 
-	wrk, ok := s.workers[taskID]
-	if !ok {
-		wrk = impl.NewWorker(s.workerID, []notifier.Notifier{s.notifier}, s.notifyPeriod)
-		s.workers[taskID] = wrk
+	wrk := taskContext.worker
+	if wrk == nil {
+		slog.Info("starting task execution", slog.Any("task_id", taskID))
 
-		slog.Info("starting task execution", slog.String("task_id", taskID.String()))
-		// Use background context so task isn't canceled when HTTP request ends
-		wrk.Do(context.Background(), task)
+		wrk = s.workerFabric.NewWorker()
+		taskContext.worker = wrk
+		taskContext.executionContext = context.Background()
+
+		s.tasksContext.Add(taskID, taskContext)
+
+		wrk.Do(taskContext.executionContext, taskContext.task)
 	}
 
 	return nil
@@ -86,32 +94,33 @@ func (s *workerService) DeleteTask(ctx context.Context, taskID uuid.UUID) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	slog.Info("deleting task", slog.String("task_id", taskID.String()))
-	wrk, ok := s.workers[taskID]
+	taskContext, ok := s.tasksContext.Get(taskID)
 	if ok {
-		wrk.Cancel()
+		taskContext.worker.Cancel()
 	}
 
-	delete(s.workers, taskID)
-	delete(s.tasks, taskID)
+	s.tasksContext.Remove(taskID)
+
+	slog.Info("task deleted", slog.Any("task_id", taskID))
+
 	return nil
 }
 
-func validateTask(task *worker.Task) error {
+func validateTask(task *entities.Task) error {
 	if task.TargetHash == "" {
-		return fmt.Errorf("%w: target hash is required", worker.ErrInvalidTask)
+		return fmt.Errorf("%w: target hash is required", entities.ErrInvalidTask)
 	}
 
 	if task.Alphabet == "" {
-		return fmt.Errorf("%w: alphabet is required", worker.ErrInvalidTask)
+		return fmt.Errorf("%w: alphabet is required", entities.ErrInvalidTask)
 	}
 
 	if task.MaxLength <= 0 {
-		return fmt.Errorf("%w: max length must be greater than 0", worker.ErrInvalidTask)
+		return fmt.Errorf("%w: max length must be greater than 0", entities.ErrInvalidTask)
 	}
 
 	if task.EndIndex <= task.StartIndex {
-		return fmt.Errorf("%w: end index must be greater than start index", worker.ErrInvalidTask)
+		return fmt.Errorf("%w: end index must be greater than start index", entities.ErrInvalidTask)
 	}
 
 	return nil

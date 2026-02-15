@@ -1,4 +1,4 @@
-package impl
+package search_space
 
 type SearchSpace struct {
 	alphabet []byte
@@ -7,9 +7,7 @@ type SearchSpace struct {
 
 	powers []uint64
 
-	// prefix[l] = кол-во слов от 1 до l символов
-	// prefix[0] = 0
-	prefix []uint64
+	prefix []uint64 // Кол-во слов от 1 до l символов
 }
 
 func NewSearchSpace(alphabet string, maxLen int) *SearchSpace {
@@ -38,7 +36,7 @@ func (s *SearchSpace) TotalSize() uint64 {
 	return s.prefix[s.maxLen]
 }
 
-// FillWord converts index to word and writes it to buf.
+// FillWord maps index to word
 // Returns the length of the word, or 0 if index is out of range.
 func (s *SearchSpace) FillWord(index uint64, buf []byte) int {
 	length := 0

@@ -30,7 +30,7 @@ func (c *workerClient) Address() string {
 
 func NewWorkerClient(address string) *workerClient {
 	baseURL := address
-	// Ensure baseURL has http:// scheme
+
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
 		baseURL = "http://" + address
 	}

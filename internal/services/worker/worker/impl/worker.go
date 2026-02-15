@@ -12,6 +12,7 @@ import (
 	"github.com/kestfor/CrackHash/internal/services/worker"
 	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
 	workerinterface "github.com/kestfor/CrackHash/internal/services/worker/worker"
+	"github.com/kestfor/CrackHash/pkg/search_space"
 )
 
 type workerImpl struct {
@@ -65,7 +66,7 @@ func (w *workerImpl) do(ctx context.Context) {
 	notifyContext, cancelNotify := context.WithCancel(ctx)
 	go w.backgroundNotify(notifyContext, wrkContext)
 
-	searchSpace := NewSearchSpace(w.task.Alphabet, w.task.MaxLength)
+	searchSpace := search_space.NewSearchSpace(w.task.Alphabet, w.task.MaxLength)
 	buf := make([]byte, w.task.MaxLength)
 
 	for idx := w.task.StartIndex; idx < w.task.EndIndex; idx++ {

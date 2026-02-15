@@ -9,14 +9,34 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kestfor/CrackHash/cmd/worker/handler"
-	"github.com/kestfor/CrackHash/internal/services/worker"
+	workersrv "github.com/kestfor/CrackHash/internal/services/worker"
 	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
 	"github.com/kestfor/CrackHash/internal/services/worker/registerer"
+	worker "github.com/kestfor/CrackHash/internal/services/worker/worker"
+	"github.com/kestfor/CrackHash/internal/services/worker/worker/impl"
 	"github.com/kestfor/CrackHash/internal/services/worker/workerservice"
 	"github.com/kestfor/CrackHash/pkg/logging"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
+
+type workerFabric struct {
+	id       uuid.UUID
+	notifier notifier.Notifier
+	cfg      *workerservice.Config
+}
+
+func newWorkerFabric(id uuid.UUID, n notifier.Notifier, cfg *workerservice.Config) *workerFabric {
+	return &workerFabric{
+		id:       id,
+		notifier: n,
+		cfg:      cfg,
+	}
+}
+
+func (w *workerFabric) NewWorker() worker.Worker {
+	return impl.NewWorker(w.id, []notifier.Notifier{w.notifier}, w.cfg.NotifyPeriod)
+}
 
 func New() *cobra.Command {
 	var cfgPath string
@@ -76,7 +96,9 @@ func run(cfgPath string) error {
 	slog.Info("initializing dependencies...")
 
 	httpNotifier := notifier.NewHTTPNotifier(cfg.Notifier)
-	workerService := workerservice.NewService(id, cfg.Worker, httpNotifier)
+	wrkFabric := newWorkerFabric(id, httpNotifier, cfg.Worker)
+
+	workerService := workerservice.NewService(cfg.Worker, wrkFabric)
 	slog.Info("dependencies initialized")
 
 	initServer(cfg.HTTP, workerService)
@@ -90,7 +112,7 @@ func initLogger(cfg *logging.LoggerConfig, id uuid.UUID) {
 		slog.String("service", "worker"))
 }
 
-func initServer(httpServerConfig *HTTPServerConfig, workerService worker.Service) {
+func initServer(httpServerConfig *HTTPServerConfig, workerService workersrv.Service) {
 	slog.Info("initializing http server...")
 
 	workerHandler := handler.NewHandler(workerService)

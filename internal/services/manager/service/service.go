@@ -11,6 +11,8 @@ import (
 	"github.com/kestfor/CrackHash/internal/services/manager/healthchecker"
 	"github.com/kestfor/CrackHash/internal/services/manager/workerclient"
 	"github.com/kestfor/CrackHash/internal/services/worker"
+	utils "github.com/kestfor/CrackHash/pkg"
+	"github.com/kestfor/CrackHash/pkg/search_space"
 	"github.com/kestfor/CrackHash/pkg/set"
 )
 
@@ -21,11 +23,17 @@ type managerService struct {
 
 	healthCheckerProvider HealthCheckerProvider
 
-	m                 sync.RWMutex
-	workerHTTPClients map[uuid.UUID]workerclient.WorkerClient // workerID -> http worker client to trigger internal api
-	taskToWorkersMap  map[uuid.UUID]set.Set[uuid.UUID]        // taskID -> workerHTTPClients: when task created it assigned to list of workerHTTPClients, this struct stores this info
+	m sync.RWMutex
 
-	addrToIDMap map[string]uuid.UUID // reverse mapping for fast lookup of workerID by address
+	// workerClients stores workerID -> worker client mapping to trigger internal api
+	workerClients map[uuid.UUID]workerclient.WorkerClient
+
+	// assignedWorkers stores taskID -> workerClients mapping.
+	// When task created it assigned to list of workerClients, this struct stores this info
+	assignedWorkers map[uuid.UUID]set.Set[uuid.UUID]
+
+	// addrToIDMap stores reverse mapping for fast lookup of workerID by address
+	addrToIDMap map[string]uuid.UUID
 
 	// progress stores the latest progress from each worker for each task
 	// taskID -> workerID -> progress
@@ -36,8 +44,8 @@ func NewService(alphabet string, healthCheckerProvider HealthCheckerProvider) *m
 	return &managerService{
 		alphabet:              alphabet,
 		healthCheckerProvider: healthCheckerProvider,
-		workerHTTPClients:     make(map[uuid.UUID]workerclient.WorkerClient),
-		taskToWorkersMap:      make(map[uuid.UUID]set.Set[uuid.UUID]),
+		workerClients:         make(map[uuid.UUID]workerclient.WorkerClient),
+		assignedWorkers:       make(map[uuid.UUID]set.Set[uuid.UUID]),
 		addrToIDMap:           make(map[string]uuid.UUID),
 		progress:              make(map[uuid.UUID]map[uuid.UUID]*worker.TaskProgress),
 	}
@@ -56,7 +64,7 @@ func (s *managerService) AddWorker(ctx context.Context, workerAddress string) uu
 
 	workerID := uuid.New()
 	client := workerclient.NewWorkerClient(workerAddress)
-	s.workerHTTPClients[workerID] = client
+	s.workerClients[workerID] = client
 	s.addrToIDMap[workerAddress] = workerID
 
 	slog.Info("worker registered",
@@ -89,10 +97,10 @@ func (s *managerService) clearWorkerResources(workerID uuid.UUID, workerAddress 
 // clearWorkerResourcesLocked must be called with held lock
 func (s *managerService) clearWorkerResourcesLocked(workerID uuid.UUID, workerAddress string) {
 	delete(s.addrToIDMap, workerAddress)
-	delete(s.workerHTTPClients, workerID)
+	delete(s.workerClients, workerID)
 
-	// mark this worker's taskToWorkersMap as failed if not already done
-	for taskID, workers := range s.taskToWorkersMap {
+	// mark this worker's assignedWorkers as failed if not already done
+	for taskID, workers := range s.assignedWorkers {
 		for wID := range workers {
 			if wID == workerID {
 				if _, ok := s.progress[taskID]; !ok {
@@ -124,12 +132,12 @@ func (s *managerService) UpdateProgress(ctx context.Context, progress *worker.Ta
 	taskID := progress.TaskID
 	workerID := progress.WorkerID
 
-	if _, ok := s.workerHTTPClients[workerID]; !ok {
+	if _, ok := s.workerClients[workerID]; !ok {
 		slog.Warn("received push update from unknown worker", slog.Any("worker_id", workerID))
 		return fmt.Errorf("worker not found: %s", workerID)
 	}
 
-	workerIDs, ok := s.taskToWorkersMap[taskID]
+	workerIDs, ok := s.assignedWorkers[taskID]
 	if !ok {
 		slog.Warn("received push update for unknown task", slog.Any("task_id", taskID))
 		return fmt.Errorf("task not found: %s", taskID)
@@ -159,7 +167,7 @@ func (s *managerService) TaskProgress(ctx context.Context, taskID uuid.UUID) (*m
 	s.m.RLock()
 	defer s.m.RUnlock()
 
-	workerIDs, ok := s.taskToWorkersMap[taskID]
+	workerIDs, ok := s.assignedWorkers[taskID]
 	if !ok {
 		return nil, manager.ErrTaskNotFound
 	}
@@ -182,7 +190,7 @@ func (s *managerService) SubmitTask(ctx context.Context, targetHash string, maxL
 	s.m.Lock()
 	defer s.m.Unlock()
 
-	workersNum := len(s.workerHTTPClients)
+	workersNum := len(s.workerClients)
 	if workersNum == 0 {
 		return uuid.Nil, manager.ErrNoAvailableWorkers
 	}
@@ -191,9 +199,8 @@ func (s *managerService) SubmitTask(ctx context.Context, targetHash string, maxL
 		return uuid.Nil, manager.ErrInvalidMaxLength
 	}
 
-	// Calculate total search space size and split into ranges
-	totalSize := manager.SearchSpaceSize(len(s.alphabet), maxLength)
-	ranges, err := manager.SplitRange(totalSize, min(workersNum, int(totalSize)))
+	totalSize := search_space.NewSearchSpace(s.alphabet, maxLength).TotalSize()
+	ranges, err := utils.SplitRange(totalSize, min(workersNum, int(totalSize)))
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to split search space: %w", err)
 	}
@@ -210,7 +217,7 @@ func (s *managerService) SubmitTask(ctx context.Context, targetHash string, maxL
 	availableWorkers := make([]uuid.UUID, 0, workersNum)
 	rangeIdx := 0
 
-	for wID, client := range s.workerHTTPClients {
+	for wID, client := range s.workerClients {
 		if rangeIdx >= len(ranges) {
 			break
 		}
@@ -233,16 +240,12 @@ func (s *managerService) SubmitTask(ctx context.Context, targetHash string, maxL
 				slog.Any("error", err),
 			)
 			// Clean up created tasks on other workers
-			for _, createdWID := range availableWorkers {
-				if c, ok := s.workerHTTPClients[createdWID]; ok {
-					_ = c.DeleteTask(ctx, taskID)
-				}
-			}
+			s.deleteWorkersTask(ctx, taskID, availableWorkers)
 			return uuid.Nil, fmt.Errorf("failed to create task on worker %s: %w", wID.String(), err)
 		}
 
 		slog.Info("task created on worker",
-			slog.String("worker_id", wID.String()),
+			slog.Any("worker_id", wID),
 			slog.Uint64("start_index", r.Start),
 			slog.Uint64("end_index", r.End),
 		)
@@ -255,19 +258,24 @@ func (s *managerService) SubmitTask(ctx context.Context, targetHash string, maxL
 		return uuid.Nil, manager.ErrNoAvailableWorkers
 	}
 
-	// Start all tasks
-	s.taskToWorkersMap[taskID] = set.New[uuid.UUID]()
+	// Start all tasks, if any worker failed, task deletes
+	assignedWorkers := set.New[uuid.UUID]()
 	for _, wID := range availableWorkers {
-		s.taskToWorkersMap[taskID].Add(wID)
-		client := s.workerHTTPClients[wID]
+		assignedWorkers.Add(wID)
+		client := s.workerClients[wID]
 
 		if err := client.DoTask(ctx, taskID); err != nil {
 			slog.Error("failed to start task on worker",
 				slog.Any("worker_id", wID),
 				slog.Any("error", err),
 			)
+
+			s.deleteWorkersTask(ctx, taskID, availableWorkers)
+			return uuid.Nil, nil
 		}
 	}
+
+	s.assignedWorkers[taskID] = assignedWorkers
 
 	slog.Info("task submitted successfully",
 		slog.Any("task_id", taskID),
@@ -275,6 +283,28 @@ func (s *managerService) SubmitTask(ctx context.Context, targetHash string, maxL
 	)
 
 	return taskID, nil
+}
+
+func (s *managerService) deleteWorkersTask(ctx context.Context, taskID uuid.UUID, workers []uuid.UUID) {
+	failedNum := 0
+	for _, wID := range workers {
+		if c, ok := s.workerClients[wID]; ok {
+			err := c.DeleteTask(ctx, taskID)
+
+			if err != nil {
+				slog.Warn("deleting task from worker failed",
+					slog.Any("error", err),
+					slog.Any("task_id", taskID),
+					slog.Any("worker_id", wID),
+				)
+				failedNum++
+			}
+
+		}
+	}
+
+	slog.Info("task was requested to delete from workers", slog.Any("task_id", taskID), slog.Int("failed_requests", failedNum))
+
 }
 
 func mergeProgress(progresses ...*worker.TaskProgress) *manager.TaskStatus {

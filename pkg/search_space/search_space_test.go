@@ -1,4 +1,4 @@
-package impl
+package search_space
 
 import (
 	"testing"
