@@ -79,6 +79,248 @@
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Sequence Diagrams - CrackHash System
+
+Диаграммы последовательностей, описывающие основные флоу взаимодействия компонентов системы.
+
+## Обзор флоу
+
+Система поддерживает три основных сценария взаимодействия:
+1. **Создание задачи** - клиент отправляет запрос на взлом хэша
+2. **Push прогресса** - воркеры периодически отправляют обновления менеджеру
+3. **Запрос статуса** - клиент запрашивает текущий статус задачи
+
+---
+
+## 1. Создание задачи клиентом
+
+Клиент отправляет запрос на взлом MD5 хэша. Менеджер распределяет задачу между доступными воркерами.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Manager
+    participant Worker1
+    participant Worker2
+    participant WorkerN
+
+    Note over Client,WorkerN: Создание задачи на взлом хэша
+
+    Client->>+Manager: POST /api/hash/crack<br/>{hash, maxLength}
+
+    Note over Manager: Проверка доступных воркеров
+    Note over Manager: Расчет пространства поиска<br/>(SearchSpace)
+    Note over Manager: Разбиение на диапазоны индексов<br/>(SplitRange)
+
+    par Распределение задач воркерам
+        Manager->>+Worker1: POST /api/v1/tasks/<br/>{task_id, hash, alphabet,<br/>start_index: 0, end_index: N}
+        Worker1-->>-Manager: 201 Created
+        Manager->>+Worker1: PUT /api/v1/tasks/{id}/do
+        Worker1-->>-Manager: 200 OK
+        Note over Worker1: Запуск обработки<br/>в фоновой goroutine
+    and
+        Manager->>+Worker2: POST /api/v1/tasks/<br/>{task_id, hash, alphabet,<br/>start_index: N, end_index: 2N}
+        Worker2-->>-Manager: 201 Created
+        Manager->>+Worker2: PUT /api/v1/tasks/{id}/do
+        Worker2-->>-Manager: 200 OK
+        Note over Worker2: Запуск обработки<br/>в фоновой goroutine
+    and
+        Manager->>+WorkerN: POST /api/v1/tasks/<br/>{task_id, hash, alphabet,<br/>start_index: 2N, end_index: Total}
+        WorkerN-->>-Manager: 201 Created
+        Manager->>+WorkerN: PUT /api/v1/tasks/{id}/do
+        WorkerN-->>-Manager: 200 OK
+        Note over WorkerN: Запуск обработки<br/>в фоновой goroutine
+    end
+
+    Note over Manager: Сохранение маппинга<br/>task_id → [worker_ids]
+
+    Manager-->>-Client: 200 OK<br/>{requestId: UUID}
+```
+
+### Описание шагов
+
+| Шаг | Действие | Описание |
+|-----|----------|----------|
+| 1 | POST /api/hash/crack | Клиент отправляет хэш и максимальную длину слова |
+| 2-4 | Подготовка | Менеджер проверяет воркеров, рассчитывает пространство |
+| 5-12 | Распределение | Отправка задач воркерам |
+| 13 | Сохранение | Менеджер запоминает какие воркеры обрабатывают задачу |
+| 14 | Ответ | Клиент получает UUID для отслеживания статуса |
+
+---
+
+## 2. Отправка прогресса воркерами (Push-модель)
+
+Воркеры периодически отправляют обновления прогресса менеджеру через настраиваемый интервал (notify_period).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Manager
+    participant Worker1
+    participant Worker2
+
+    loop Каждые notify_period
+        Worker1->>Manager: POST /api/tasks/progress
+        Note right of Worker1: status: IN_PROGRESS
+        Manager-->>Worker1: 200 OK
+        Note over Manager: Сохранение прогресса
+
+        Worker2->>Manager: POST /api/tasks/progress
+        Note right of Worker2: status: IN_PROGRESS
+        Manager-->>Worker2: 200 OK
+    end
+
+```
+
+### Структура прогресса
+
+```json
+{
+  "task_id": "uuid-задачи",
+  "worker_id": "uuid-воркера",
+  "status": "IN_PROGRESS | READY | ERROR",
+  "iterations_done": 1000,
+  "total_iterations": 5000,
+  "result": ["найденные", "слова"]
+}
+```
+
+### Возможные статусы воркера
+
+| Статус | Описание |
+|--------|----------|
+| `IN_PROGRESS` | Воркер выполняет перебор |
+| `READY` | Воркер завершил обработку своего диапазона |
+| `ERROR` | Произошла ошибка при обработке |
+
+---
+
+## 3. Запрос статуса клиентом
+
+Клиент запрашивает текущий статус задачи. Менеджер агрегирует прогресс от всех воркеров.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Manager
+    Client ->> Manager: GET /api/hash/status?requestId=UUID
+    Note over Manager: Агрегация полученных прогрессов по task_id (mergeProgress)
+    Note over Manager: Определение общего статуса
+    Note over Manager: Расчет процента
+    Manager -->> Client: {status, progress, data}
+```
+
+### Варианты ответа
+
+**IN_PROGRESS** - задача выполняется:
+```json
+{
+  "status": "IN_PROGRESS",
+  "progress": 65,
+  "data": null
+}
+```
+
+**READY** - все воркеры завершили:
+```json
+{
+  "status": "READY",
+  "progress": 100,
+  "data": ["abcd"]
+}
+```
+
+**ERROR** - хотя бы один воркер упал:
+```json
+{
+  "status": "ERROR",
+  "progress": 50,
+  "data": null
+}
+```
+---
+
+## 4. Полный жизненный цикл
+
+Комплексная диаграмма всего процесса от создания до получения результата.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Manager
+    participant Worker1
+    participant Worker2
+
+    Note over Client,Worker2: Фаза 1 - Регистрация воркеров
+
+    Worker1->>Manager: GET /api/hash/register-worker
+    Manager-->>Worker1: {id: worker1-uuid}
+
+    Worker2->>Manager: GET /api/hash/register-worker
+    Manager-->>Worker2: {id: worker2-uuid}
+
+    Note over Client,Worker2: Фаза 2 - Создание задачи
+
+    Client->>Manager: POST /api/hash/crack
+    Manager->>Worker1: POST /api/v1/tasks/ + PUT /api/v1/tasks/{id}/do  (создание + запуск задачи)
+    Manager->>Worker2: POST /api/v1/tasks/ + PUT /api/v1/tasks/{id}/do  (создание + запуск задачи)
+    Manager-->>Client: {requestId: task-uuid}
+
+    Note over Client,Worker2: Фаза 3 - Выполнение
+
+    loop Периодически
+        Worker1->>Manager: POST /api/tasks/progress
+        Worker2->>Manager: POST /api/tasks/progress
+    end
+
+    Client->>Manager: GET /api/hash/status?requestId=UUID
+    Manager-->>Client: {IN_PROGRESS, 45%}
+
+    Note over Client,Worker2: Фаза 4 - Завершение
+
+    Worker1->>Manager: POST /api/tasks/progress (READY)
+    Worker2->>Manager: POST /api/tasks/progress (READY)
+
+    Client->>Manager: GET /api/hash/status?requestId=UUID
+    Manager-->>Client: {READY, 100%, data}
+```
+
+---
+
+## 5. Health Check и обработка падения воркера
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Manager
+    participant HealthChecker
+    participant Worker1
+    participant Worker2
+
+    loop Каждые healthcheck.period
+        HealthChecker->>Worker1: GET /health
+        Worker1-->>HealthChecker: 200 OK
+
+        HealthChecker->>Worker2: GET /health
+
+        alt Воркер доступен
+            Worker2-->>HealthChecker: 200 OK
+        else Воркер недоступен
+            Note over HealthChecker: Таймаут
+            Note over HealthChecker: Инкремент ошибок
+        end
+    end
+
+    Note over HealthChecker: Превышен max_tries
+
+    HealthChecker->>Manager: Удалить воркера
+    Note over Manager: Пометить задачи как ERROR
+```
+
 ## Описание API
 
 ### External API (Manager) - для клиентов
