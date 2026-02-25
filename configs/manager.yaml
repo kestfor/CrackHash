@@ -10,4 +10,4 @@ hash_cracker:
 
 logger:
   level: INFO
-  is_json: true
+  is_json: false

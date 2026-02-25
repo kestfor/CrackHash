@@ -4,6 +4,9 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
+
+	"github.com/charmbracelet/log"
 )
 
 type LoggerConfig struct {
@@ -29,12 +32,18 @@ func InitLogger(cfg *LoggerConfig, attrs ...slog.Attr) {
 		level = slog.LevelInfo
 	}
 
+	options := log.Options{
+		ReportCaller:    true,
+		ReportTimestamp: true,
+		TimeFormat:      time.Kitchen,
+	}
 	if cfg.IsJSON {
-		h = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+		options.Formatter = log.JSONFormatter
 	} else {
-		h = slog.Default().Handler()
+		options.Formatter = log.TextFormatter
 	}
 
+	h = log.NewWithOptions(os.Stderr, options)
 	slog.SetDefault(slog.New(h.WithAttrs(attrs)))
 	lvl := new(slog.LevelVar)
 	lvl.Set(level)
