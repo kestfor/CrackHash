@@ -1,15 +1,12 @@
 http:
   port: 8081
 
-registerer:
-  register_url: "http://manager-service:8080/api/hash/register-worker"
-  self_port: 8081
-
-notifier:
-  notify_url: "http://manager-service:8080/api/tasks/progress"
+broker:
+  url: amqp://guest:guest@rabbitmq:5672/
+  requeue_limit: 3
 
 workers:
-  max_parallel: 10
+  max_parallel: 1
   notify_period: 5s
 
 logger:

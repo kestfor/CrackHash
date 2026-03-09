@@ -10,7 +10,3 @@ type CreateTaskRequest struct {
 type CreateTaskResponse struct {
 	RequestID uuid.UUID `json:"requestId"`
 }
-
-type RegisterWorkerResponse struct {
-	WorkerID uuid.UUID `json:"id"`
-}

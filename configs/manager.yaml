@@ -1,12 +1,18 @@
 http:
   port: 8080
 
-healthcheck:
-  period: 5s
-  max_tries: 3
+storage:
+  db: "tasks"
+  url: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/tasks_db?replicaSet=rs0&w=majority
+
+broker:
+  url: amqp://guest:guest@rabbitmq:5672/
+  requeue_limit: 3
 
 hash_cracker:
   alphabet: "abcdefghijklmnopqrstuvwxyz0123456789"
+
+retry_send_period: 5s
 
 logger:
   level: INFO

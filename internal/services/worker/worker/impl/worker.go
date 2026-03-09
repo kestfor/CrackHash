@@ -4,43 +4,43 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kestfor/CrackHash/internal/services/broker"
+	"github.com/kestfor/CrackHash/internal/services/broker/rabbitmq"
 	"github.com/kestfor/CrackHash/internal/services/worker"
-	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
 	workerinterface "github.com/kestfor/CrackHash/internal/services/worker/worker"
 	"github.com/kestfor/CrackHash/pkg/search_space"
 )
 
 type workerImpl struct {
-	workerID     uuid.UUID
-	task         *worker.Task
-	notifiers    []notifier.Notifier
-	progress     atomic.Pointer[worker.TaskProgress]
-	notifyPeriod time.Duration
-	cancel       context.CancelFunc
+	workerID uuid.UUID
+	task     *worker.Task
+	progress atomic.Pointer[worker.TaskProgress]
+
+	publisher             broker.Publisher
+	publishProgressPeriod time.Duration
+	cancel                context.CancelFunc
 }
 
 var _ workerinterface.Worker = (*workerImpl)(nil)
 
-func NewWorker(workerID uuid.UUID, notifiers []notifier.Notifier, notifyPeriod time.Duration) *workerImpl {
+func NewWorker(workerID uuid.UUID, publisher broker.Publisher, publishProgressPeriod time.Duration) *workerImpl {
 	return &workerImpl{
-		workerID:     workerID,
-		notifyPeriod: notifyPeriod,
-		notifiers:    notifiers,
+		workerID:              workerID,
+		publishProgressPeriod: publishProgressPeriod,
+		publisher:             publisher,
 	}
 }
 
 func (w *workerImpl) Do(ctx context.Context, task *worker.Task) {
 	w.task = task
 	ctx, w.cancel = context.WithCancel(ctx)
-
-	go func() {
-		w.do(ctx)
-	}()
+	w.do(ctx)
 }
 
 func (w *workerImpl) Cancel() {
@@ -64,7 +64,7 @@ func (w *workerImpl) do(ctx context.Context) {
 	failed := false
 
 	notifyContext, cancelNotify := context.WithCancel(ctx)
-	go w.backgroundNotify(notifyContext, wrkContext)
+	go w.backgroundProgressPublish(notifyContext, wrkContext)
 
 	searchSpace := search_space.NewSearchSpace(w.task.Alphabet, w.task.MaxLength)
 	buf := make([]byte, w.task.MaxLength)
@@ -99,7 +99,13 @@ func (w *workerImpl) do(ctx context.Context) {
 				slog.String("task_id", w.task.TaskID.String()),
 				slog.String("word", string(word)),
 			)
+
+			if string(word) == "bom" {
+				panic("imitating panic")
+			}
+
 			wrkContext.AddMatch(string(word))
+
 		}
 
 		wrkContext.IterationsDone.Add(1)
@@ -118,14 +124,14 @@ func (w *workerImpl) do(ctx context.Context) {
 
 	cancelNotify() // stop background notification
 
-	w.notifyProgress(progress) // send final notification
+	w.publishProgress(ctx, progress) // send final notification
 }
 
-func (w *workerImpl) backgroundNotify(ctx context.Context, wrkContext *workerContext) {
+func (w *workerImpl) backgroundProgressPublish(ctx context.Context, wrkContext *workerContext) {
 
 	progress := w.contextToProgress(wrkContext)
 
-	ticker := time.NewTicker(w.notifyPeriod)
+	ticker := time.NewTicker(w.publishProgressPeriod)
 	defer ticker.Stop()
 
 	for {
@@ -140,20 +146,23 @@ func (w *workerImpl) backgroundNotify(ctx context.Context, wrkContext *workerCon
 
 			slog.Info("worker progress", slog.Any("progress", progress))
 
-			w.notifyProgress(progress)
+			w.publishProgress(ctx, progress)
 		}
 	}
 }
 
-func (w *workerImpl) notifyProgress(progress *worker.TaskProgress) {
-	for _, n := range w.notifiers {
-		if err := n.Notify(progress); err != nil {
-			slog.Warn("failed to notify subscriber",
-				slog.String("task_id", progress.TaskID.String()),
-				slog.Any("error", err),
-			)
-		}
+func (w *workerImpl) publishProgress(ctx context.Context, progress *worker.TaskProgress) {
+	message, err := json.Marshal(progress)
+	if err != nil {
+		slog.Error("failed to marshal progress", slog.Any("error", err))
+		return
 	}
+
+	if err := w.publisher.Publish(ctx, rabbitmq.TasksProgressQueue, message); err != nil {
+		slog.Error("failed to publish progress", slog.Any("error", err))
+	}
+
+	slog.Info("progress published", slog.String("progress", progress.String()))
 }
 
 func (w *workerImpl) contextToProgress(wrkContext *workerContext) *worker.TaskProgress {

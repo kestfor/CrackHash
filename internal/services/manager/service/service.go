@@ -2,313 +2,252 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sync"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/kestfor/CrackHash/internal/services/broker"
+	"github.com/kestfor/CrackHash/internal/services/broker/rabbitmq"
 	"github.com/kestfor/CrackHash/internal/services/manager"
-	"github.com/kestfor/CrackHash/internal/services/manager/healthchecker"
-	"github.com/kestfor/CrackHash/internal/services/manager/workerclient"
+	"github.com/kestfor/CrackHash/internal/services/manager/storage"
 	"github.com/kestfor/CrackHash/internal/services/worker"
 	utils "github.com/kestfor/CrackHash/pkg"
 	"github.com/kestfor/CrackHash/pkg/search_space"
 	"github.com/kestfor/CrackHash/pkg/set"
 )
 
-type HealthCheckerProvider func(workerAddress string) healthchecker.HealthChecker
-
 type managerService struct {
 	alphabet string
 
-	healthCheckerProvider HealthCheckerProvider
-
-	m sync.RWMutex
-
-	// workerClients stores workerID -> worker client mapping to trigger internal api
-	workerClients map[uuid.UUID]workerclient.WorkerClient
-
-	// assignedWorkers stores taskID -> workerClients mapping.
-	// When task created it assigned to list of workerClients, this struct stores this info
-	assignedWorkers map[uuid.UUID]set.Set[uuid.UUID]
-
-	// addrToIDMap stores reverse mapping for fast lookup of workerID by address
-	addrToIDMap map[string]uuid.UUID
-
-	// progress stores the latest progress from each worker for each task
-	// taskID -> workerID -> progress
-	progress map[uuid.UUID]map[uuid.UUID]*worker.TaskProgress
+	progressStorage     storage.ProgressStorage
+	subTaskStorage      storage.SubTaskStorage
+	tasksPublisher      broker.Publisher
+	progressConsumer    broker.Consumer
+	deadLettersConsumer broker.Consumer
+	retrySendPeriod     time.Duration
 }
 
-func NewService(alphabet string, healthCheckerProvider HealthCheckerProvider) *managerService {
+func NewService(
+	alphabet string,
+	progressStorage storage.ProgressStorage,
+	subTaskStorage storage.SubTaskStorage,
+	tasksPublisher broker.Publisher,
+	progressConsumer broker.Consumer,
+	deadLettersConsumer broker.Consumer,
+	retrySendPeriod time.Duration,
+) *managerService {
 	return &managerService{
-		alphabet:              alphabet,
-		healthCheckerProvider: healthCheckerProvider,
-		workerClients:         make(map[uuid.UUID]workerclient.WorkerClient),
-		assignedWorkers:       make(map[uuid.UUID]set.Set[uuid.UUID]),
-		addrToIDMap:           make(map[string]uuid.UUID),
-		progress:              make(map[uuid.UUID]map[uuid.UUID]*worker.TaskProgress),
+		alphabet:            alphabet,
+		progressStorage:     progressStorage,
+		subTaskStorage:      subTaskStorage,
+		tasksPublisher:      tasksPublisher,
+		progressConsumer:    progressConsumer,
+		deadLettersConsumer: deadLettersConsumer,
+		retrySendPeriod:     retrySendPeriod,
 	}
 }
 
-func (s *managerService) AddWorker(ctx context.Context, workerAddress string) uuid.UUID {
-	s.m.Lock()
-	defer s.m.Unlock()
+func (s *managerService) Run(ctx context.Context) error {
+	slog.Info("starting manager service")
 
-	if oldID, ok := s.addrToIDMap[workerAddress]; ok {
-		slog.Info("worker with same address already exists, removing old worker resources",
-			slog.String("worker_address", workerAddress),
-		)
-		s.clearWorkerResourcesLocked(oldID, workerAddress)
-	}
-
-	workerID := uuid.New()
-	client := workerclient.NewWorkerClient(workerAddress)
-	s.workerClients[workerID] = client
-	s.addrToIDMap[workerAddress] = workerID
-
-	slog.Info("worker registered",
-		slog.String("worker_id", workerID.String()),
-		slog.String("worker_address", workerAddress),
-	)
-
-	go s.checkWorker(ctx, workerID, client)
-	return workerID
-}
-
-// checkWorker blocks until worker failure, then removes it
-func (s *managerService) checkWorker(ctx context.Context, workerID uuid.UUID, client workerclient.WorkerClient) {
-	healthChecker := s.healthCheckerProvider(client.Address())
-	healthChecker.NotifyFailure() // blocks until failure
-
-	slog.Warn("worker health check failed, removing worker",
-		slog.String("worker_id", workerID.String()),
-	)
-
-	s.clearWorkerResources(workerID, client.Address())
-}
-
-func (s *managerService) clearWorkerResources(workerID uuid.UUID, workerAddress string) {
-	s.m.Lock()
-	defer s.m.Unlock()
-	s.clearWorkerResourcesLocked(workerID, workerAddress)
-}
-
-// clearWorkerResourcesLocked must be called with held lock
-func (s *managerService) clearWorkerResourcesLocked(workerID uuid.UUID, workerAddress string) {
-	delete(s.addrToIDMap, workerAddress)
-	delete(s.workerClients, workerID)
-
-	// mark this worker's assignedWorkers as failed if not already done
-	for taskID, workers := range s.assignedWorkers {
-		for wID := range workers {
-			if wID == workerID {
-				if _, ok := s.progress[taskID]; !ok {
-					s.progress[taskID] = make(map[uuid.UUID]*worker.TaskProgress)
-				}
-
-				progress, ok := s.progress[taskID][workerID]
-				if !ok {
-					progress = &worker.TaskProgress{
-						TaskID:   taskID,
-						WorkerID: workerID,
-						Status:   worker.StatusError,
-					}
-				}
-
-				if progress.Status != worker.StatusReady {
-					progress.Status = worker.StatusError
-					s.progress[taskID][workerID] = progress
-				}
-			}
+	go func() {
+		slog.Info("starting progress consumer")
+		err := s.progressConsumer.Consume(ctx, s)
+		if err != nil {
+			slog.Error("consume msg", slog.Any("error", err))
 		}
-	}
-}
+	}()
 
-func (s *managerService) UpdateProgress(ctx context.Context, progress *worker.TaskProgress) error {
-	s.m.Lock()
-	defer s.m.Unlock()
+	go func() {
+		slog.Info("starting dead letters consumer")
+		err := s.deadLettersConsumer.Consume(ctx, s)
+		if err != nil {
+			slog.Error("consume msg", slog.Any("error", err))
+		}
+	}()
 
-	taskID := progress.TaskID
-	workerID := progress.WorkerID
-
-	if _, ok := s.workerClients[workerID]; !ok {
-		slog.Warn("received push update from unknown worker", slog.Any("worker_id", workerID))
-		return fmt.Errorf("worker not found: %s", workerID)
-	}
-
-	workerIDs, ok := s.assignedWorkers[taskID]
-	if !ok {
-		slog.Warn("received push update for unknown task", slog.Any("task_id", taskID))
-		return fmt.Errorf("task not found: %s", taskID)
-	}
-
-	if !workerIDs.Contains(workerID) {
-		slog.Warn("received push update for task not assigned to worker",
-			slog.Any("task_id", taskID),
-			slog.Any("worker_id", workerID),
-		)
-		return fmt.Errorf("worker %s is not assigned to task %s", workerID, taskID)
-	}
-
-	if _, ok := s.progress[taskID]; !ok {
-		s.progress[taskID] = make(map[uuid.UUID]*worker.TaskProgress)
-	}
-	s.progress[taskID][workerID] = progress
-
-	slog.Info("task progress received",
-		slog.Any("progress", progress),
-	)
+	go s.runSubTaskSender(ctx)
 
 	return nil
 }
 
-func (s *managerService) TaskProgress(ctx context.Context, taskID uuid.UUID) (*manager.TaskStatus, error) {
-	s.m.RLock()
-	defer s.m.RUnlock()
+func (s *managerService) runSubTaskSender(ctx context.Context) {
+	slog.Info("starting subtask sender", slog.Duration("period", s.retrySendPeriod))
 
-	workerIDs, ok := s.assignedWorkers[taskID]
-	if !ok {
-		return nil, manager.ErrTaskNotFound
+	ticker := time.NewTicker(s.retrySendPeriod)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("subtask sender stopped")
+			return
+		case <-ticker.C:
+			s.sendPendingSubTasks(ctx)
+		}
+	}
+}
+
+func (s *managerService) sendPendingSubTasks(ctx context.Context) {
+	pending, err := s.subTaskStorage.FindPending(ctx)
+	if err != nil {
+		slog.Error("find pending subtasks", slog.Any("error", err))
+		return
 	}
 
-	progresses := make([]*worker.TaskProgress, 0, len(workerIDs))
+	if len(pending) == 0 {
+		return
+	}
 
-	taskProgress, ok := s.progress[taskID]
+	slog.Info("found pending subtasks", slog.Int("count", len(pending)))
 
-	if ok {
-		for _, progress := range taskProgress {
-			progresses = append(progresses, progress)
+	for _, sub := range pending {
+		data, err := json.Marshal(sub.Task)
+		if err != nil {
+			slog.Error("marshal subtask", slog.Any("error", err))
+			continue
 		}
+
+		if err := s.tasksPublisher.Publish(ctx, rabbitmq.TasksQueue, data); err != nil {
+			slog.Error("publish subtask", slog.Any("subtask", sub.Task), slog.Any("error", err))
+			continue
+		}
+
+		if err := s.subTaskStorage.MarkSent(ctx, sub.TaskID, sub.StartIndex, sub.EndIndex); err != nil {
+			slog.Error("mark subtask sent", slog.Any("subtask", sub.Task), slog.Any("error", err))
+			continue
+		}
+
+		slog.Info("subtask sent", slog.Any("task_id", sub.TaskID), slog.Uint64("start", sub.StartIndex), slog.Uint64("end", sub.EndIndex))
+	}
+}
+
+// Handle handles progress messages from workers
+func (s *managerService) Handle(msg broker.Message) error {
+
+	var err error
+	ctx := context.Background()
+
+	switch msg.RoutingKey {
+	case rabbitmq.TasksProgressQueue:
+		err = s.handleProgress(ctx, msg)
+	case rabbitmq.DeadLetterQueue:
+		err = s.handleDeadLetter(ctx, msg)
+	default:
+		err = fmt.Errorf("unknown routing key: %s", msg.RoutingKey)
+	}
+
+	if err != nil {
+		slog.Error("handle message", slog.Any("error", err))
+		return fmt.Errorf("handle message: %w", err)
+	}
+
+	return msg.Ack()
+}
+
+func (s *managerService) handleProgress(ctx context.Context, msg broker.Message) error {
+	var progress worker.TaskProgress
+
+	if err := json.Unmarshal(msg.Body, &progress); err != nil {
+		slog.Error("unmarshal progress", slog.Any("error", err))
+		return fmt.Errorf("unmarshal progress: %w", err)
+	}
+
+	slog.Info("got progress message", slog.String("task", progress.String()))
+
+	if err := s.progressStorage.Upsert(ctx, progress); err != nil {
+		slog.Error("upsert progress", slog.Any("error", err))
+		return fmt.Errorf("upsert progress: %w", err)
+	}
+
+	return nil
+}
+
+func (s *managerService) handleDeadLetter(ctx context.Context, msg broker.Message) error {
+	deadSubTask := worker.Task{}
+	if err := json.Unmarshal(msg.Body, &deadSubTask); err != nil {
+		slog.Error("unmarshal dead letter", slog.Any("error", err))
+		return fmt.Errorf("unmarshal dead letter: %w", err)
+	}
+
+	slog.Info("got dead letter", slog.String("task", deadSubTask.String()))
+
+	failedProgress := worker.TaskProgress{
+		TaskID: deadSubTask.TaskID,
+		Status: worker.StatusError,
+	}
+
+	if err := s.progressStorage.Upsert(ctx, failedProgress); err != nil {
+		slog.Error("upsert progress", slog.Any("error", err))
+		return fmt.Errorf("upsert progress: %w", err)
+	}
+
+	return nil
+
+}
+
+func (s *managerService) TaskProgress(ctx context.Context, taskID uuid.UUID) (manager.TaskStatus, error) {
+	progresses, err := s.progressStorage.Collect(ctx, taskID)
+
+	if err != nil {
+		slog.Error("collect progress", slog.Any("error", err))
+		return manager.TaskStatus{}, fmt.Errorf("collect progress: %w", err)
 	}
 
 	merged := mergeProgress(progresses...)
+	slog.Info("task progress", slog.Any("task_id", taskID), slog.Any("progress", merged))
+
 	return merged, nil
 }
 
 func (s *managerService) SubmitTask(ctx context.Context, targetHash string, maxLength int) (uuid.UUID, error) {
-	s.m.Lock()
-	defer s.m.Unlock()
-
-	workersNum := len(s.workerClients)
-	if workersNum == 0 {
-		return uuid.Nil, manager.ErrNoAvailableWorkers
-	}
-
 	if maxLength <= 0 {
 		return uuid.Nil, manager.ErrInvalidMaxLength
 	}
 
 	totalSize := search_space.NewSearchSpace(s.alphabet, maxLength).TotalSize()
-	ranges, err := utils.SplitRange(totalSize, min(workersNum, int(totalSize)))
+	ranges, err := utils.SplitRange(totalSize, maxLength) // total size > max length => no repeated ranges
+
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("failed to split search space: %w", err)
+		return uuid.Nil, fmt.Errorf("split search space: %w", err)
 	}
 
 	slog.Info("submitting task",
 		slog.String("target_hash", targetHash),
 		slog.Int("max_length", maxLength),
-		slog.Int("workers_count", workersNum),
+		slog.Int("subtasks_count", maxLength),
 		slog.Uint64("total_search_space", totalSize),
 	)
 
 	taskID := uuid.New()
 
-	availableWorkers := make([]uuid.UUID, 0, workersNum)
-	rangeIdx := 0
-
-	for wID, client := range s.workerClients {
-		if rangeIdx >= len(ranges) {
-			break
-		}
-
-		r := ranges[rangeIdx]
-
-		task := &worker.Task{
+	tasks := make([]worker.Task, 0, len(ranges))
+	for _, r := range ranges {
+		tasks = append(tasks, worker.Task{
 			TaskID:     taskID,
 			TargetHash: targetHash,
 			Alphabet:   s.alphabet,
 			MaxLength:  maxLength,
 			StartIndex: r.Start,
 			EndIndex:   r.End,
-		}
-
-		err := client.CreateTask(ctx, task)
-		if err != nil {
-			slog.Error("failed to create task on worker",
-				slog.String("worker_id", wID.String()),
-				slog.Any("error", err),
-			)
-			// Clean up created tasks on other workers
-			s.deleteWorkersTask(ctx, taskID, availableWorkers)
-			return uuid.Nil, fmt.Errorf("failed to create task on worker %s: %w", wID.String(), err)
-		}
-
-		slog.Info("task created on worker",
-			slog.Any("worker_id", wID),
-			slog.Uint64("start_index", r.Start),
-			slog.Uint64("end_index", r.End),
-		)
-
-		availableWorkers = append(availableWorkers, wID)
-		rangeIdx++
+		})
 	}
 
-	if len(availableWorkers) == 0 {
-		return uuid.Nil, manager.ErrNoAvailableWorkers
+	if err := s.subTaskStorage.CreateBatch(ctx, tasks); err != nil {
+		return uuid.Nil, fmt.Errorf("save subtasks: %w", err)
 	}
-
-	// Start all tasks, if any worker failed, task deletes
-	assignedWorkers := set.New[uuid.UUID]()
-	for _, wID := range availableWorkers {
-		assignedWorkers.Add(wID)
-		client := s.workerClients[wID]
-
-		if err := client.DoTask(ctx, taskID); err != nil {
-			slog.Error("failed to start task on worker",
-				slog.Any("worker_id", wID),
-				slog.Any("error", err),
-			)
-
-			s.deleteWorkersTask(ctx, taskID, availableWorkers)
-			return uuid.Nil, nil
-		}
-	}
-
-	s.assignedWorkers[taskID] = assignedWorkers
 
 	slog.Info("task submitted successfully",
 		slog.Any("task_id", taskID),
-		slog.Int("workers_assigned", len(availableWorkers)),
 	)
 
 	return taskID, nil
 }
 
-func (s *managerService) deleteWorkersTask(ctx context.Context, taskID uuid.UUID, workers []uuid.UUID) {
-	failedNum := 0
-	for _, wID := range workers {
-		if c, ok := s.workerClients[wID]; ok {
-			err := c.DeleteTask(ctx, taskID)
-
-			if err != nil {
-				slog.Warn("deleting task from worker failed",
-					slog.Any("error", err),
-					slog.Any("task_id", taskID),
-					slog.Any("worker_id", wID),
-				)
-				failedNum++
-			}
-
-		}
-	}
-
-	slog.Info("task was requested to delete from workers", slog.Any("task_id", taskID), slog.Int("failed_requests", failedNum))
-
-}
-
-func mergeProgress(progresses ...*worker.TaskProgress) *manager.TaskStatus {
-	mergedProgress := &manager.TaskStatus{
+func mergeProgress(progresses ...worker.TaskProgress) manager.TaskStatus {
+	mergedProgress := manager.TaskStatus{
 		Progress: 0,
 		Status:   worker.StatusNotStarted,
 		Data:     []string{},

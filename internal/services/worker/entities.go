@@ -16,21 +16,21 @@ const (
 type Status string
 
 type Task struct {
-	TaskID     uuid.UUID `json:"task_id"`
-	TargetHash string    `json:"target_hash"`
-	Alphabet   string    `json:"alphabet"`
-	MaxLength  int       `json:"max_length"`
-	StartIndex uint64    `json:"start_index"`
-	EndIndex   uint64    `json:"end_index"` // exclusive
+	TaskID     uuid.UUID `json:"task_id" bson:"task_id"`
+	TargetHash string    `json:"target_hash" bson:"target_hash"`
+	Alphabet   string    `json:"alphabet" bson:"alphabet"`
+	MaxLength  int       `json:"max_length" bson:"max_length"`
+	StartIndex uint64    `json:"start_index" bson:"start_index"`
+	EndIndex   uint64    `json:"end_index" bson:"end_index"` // exclusive
 }
 
 type TaskProgress struct {
-	TaskID          uuid.UUID `json:"task_id"`
-	WorkerID        uuid.UUID `json:"worker_id"`
-	Status          Status    `json:"status"`
-	IterationsDone  int       `json:"iterations_done"`
-	TotalIterations int       `json:"total_iterations"`
-	Result          []string  `json:"result"`
+	TaskID          uuid.UUID `json:"task_id" bson:"task_id"`
+	WorkerID        uuid.UUID `json:"worker_id" bson:"worker_id"`
+	Status          Status    `json:"status" bson:"status"`
+	IterationsDone  int       `json:"iterations_done" bson:"iterations_done"`
+	TotalIterations int       `json:"total_iterations" bson:"total_iterations"`
+	Result          []string  `json:"result" bson:"result"`
 }
 
 func (t *Task) String() string {

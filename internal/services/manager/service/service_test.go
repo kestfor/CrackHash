@@ -12,21 +12,21 @@ import (
 func TestMergeProgress(t *testing.T) {
 	tests := []struct {
 		name         string
-		progresses   []*worker.TaskProgress
+		progresses   []worker.TaskProgress
 		wantStatus   worker.Status
 		wantProgress int
 		wantData     []string
 	}{
 		{
 			name:         "empty progresses",
-			progresses:   []*worker.TaskProgress{},
+			progresses:   []worker.TaskProgress{},
 			wantStatus:   worker.StatusNotStarted,
 			wantProgress: 0,
 			wantData:     []string{},
 		},
 		{
 			name: "single progress in progress",
-			progresses: []*worker.TaskProgress{
+			progresses: []worker.TaskProgress{
 				{
 					TaskID:          uuid.New(),
 					WorkerID:        uuid.New(),
@@ -42,7 +42,7 @@ func TestMergeProgress(t *testing.T) {
 		},
 		{
 			name: "single progress ready",
-			progresses: []*worker.TaskProgress{
+			progresses: []worker.TaskProgress{
 				{
 					TaskID:          uuid.New(),
 					WorkerID:        uuid.New(),
@@ -58,7 +58,7 @@ func TestMergeProgress(t *testing.T) {
 		},
 		{
 			name: "multiple progresses all ready",
-			progresses: []*worker.TaskProgress{
+			progresses: []worker.TaskProgress{
 				{
 					TaskID:          uuid.New(),
 					WorkerID:        uuid.New(),
@@ -82,7 +82,7 @@ func TestMergeProgress(t *testing.T) {
 		},
 		{
 			name: "multiple progresses one in progress",
-			progresses: []*worker.TaskProgress{
+			progresses: []worker.TaskProgress{
 				{
 					TaskID:          uuid.New(),
 					WorkerID:        uuid.New(),
@@ -106,7 +106,7 @@ func TestMergeProgress(t *testing.T) {
 		},
 		{
 			name: "multiple progresses one error",
-			progresses: []*worker.TaskProgress{
+			progresses: []worker.TaskProgress{
 				{
 					TaskID:          uuid.New(),
 					WorkerID:        uuid.New(),
@@ -130,7 +130,7 @@ func TestMergeProgress(t *testing.T) {
 		},
 		{
 			name: "progresses with zero total iterations",
-			progresses: []*worker.TaskProgress{
+			progresses: []worker.TaskProgress{
 				{
 					TaskID:          uuid.New(),
 					WorkerID:        uuid.New(),
@@ -146,7 +146,7 @@ func TestMergeProgress(t *testing.T) {
 		},
 		{
 			name: "merge results removes duplicates",
-			progresses: []*worker.TaskProgress{
+			progresses: []worker.TaskProgress{
 				{
 					TaskID:          uuid.New(),
 					WorkerID:        uuid.New(),
@@ -170,7 +170,7 @@ func TestMergeProgress(t *testing.T) {
 		},
 		{
 			name: "three workers different states",
-			progresses: []*worker.TaskProgress{
+			progresses: []worker.TaskProgress{
 				{
 					TaskID:          uuid.New(),
 					WorkerID:        uuid.New(),
