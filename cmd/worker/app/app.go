@@ -1,41 +1,40 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
-	"runtime/debug"
 
 	"github.com/google/uuid"
-	"github.com/kestfor/CrackHash/cmd/worker/handler"
-	workersrv "github.com/kestfor/CrackHash/internal/services/worker"
-	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
-	"github.com/kestfor/CrackHash/internal/services/worker/registerer"
+	"github.com/kestfor/CrackHash/internal/services/broker"
+	"github.com/kestfor/CrackHash/internal/services/broker/rabbitmq"
 	worker "github.com/kestfor/CrackHash/internal/services/worker/worker"
 	"github.com/kestfor/CrackHash/internal/services/worker/worker/impl"
 	"github.com/kestfor/CrackHash/internal/services/worker/workerservice"
 	"github.com/kestfor/CrackHash/pkg/logging"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
 
 type workerFabric struct {
-	id       uuid.UUID
-	notifier notifier.Notifier
-	cfg      *workerservice.Config
+	id        uuid.UUID
+	publisher broker.Publisher
+	cfg       *workerservice.Config
 }
 
-func newWorkerFabric(id uuid.UUID, n notifier.Notifier, cfg *workerservice.Config) *workerFabric {
+func newWorkerFabric(wID uuid.UUID, cfg *workerservice.Config, publisher broker.Publisher) *workerFabric {
 	return &workerFabric{
-		id:       id,
-		notifier: n,
-		cfg:      cfg,
+		id:        wID,
+		publisher: publisher,
+		cfg:       cfg,
 	}
 }
 
 func (w *workerFabric) NewWorker() worker.Worker {
-	return impl.NewWorker(w.id, []notifier.Notifier{w.notifier}, w.cfg.NotifyPeriod)
+	return impl.NewWorker(w.id, w.publisher, w.cfg.NotifyPeriod)
 }
 
 func New() *cobra.Command {
@@ -58,7 +57,6 @@ func New() *cobra.Command {
 }
 
 func run(cfgPath string) error {
-
 	slog.Info("parsing config...")
 
 	bytes, err := os.ReadFile(cfgPath)
@@ -82,26 +80,42 @@ func run(cfgPath string) error {
 	}
 
 	slog.Info("config validated")
+	workerID := uuid.New()
+	initLogger(cfg.Logger, workerID)
 
-	slog.Info("registering worker in manager...")
-	rgr := registerer.NewHTTPRegisterer(cfg.Registerer)
-	id, err := rgr.Register()
+	conn, err := amqp.Dial(cfg.Broker.URL)
 	if err != nil {
-		slog.Error("registering failed", slog.Any("error", err))
 		return err
 	}
 
-	initLogger(cfg.Logger, id)
-	slog.Info("registered in manager")
-	slog.Info("initializing dependencies...")
+	if err = rabbitmq.DefineQueues(conn, cfg.Broker.RequeueLimit); err != nil {
+		conn.Close()
+		return err
+	}
+	conn.Close()
 
-	httpNotifier := notifier.NewHTTPNotifier(cfg.Notifier)
-	wrkFabric := newWorkerFabric(id, httpNotifier, cfg.Worker)
+	progressPublisher, err := rabbitmq.NewPublisher(cfg.Broker.URL)
+	if err != nil {
+		return err
+	}
+	defer progressPublisher.Close()
 
-	workerService := workerservice.NewService(cfg.Worker, wrkFabric)
+	tasksConsumer := rabbitmq.NewConsumer(cfg.Broker.URL, rabbitmq.TasksQueue, cfg.Worker.MaxParallel)
+
+	wrkFabric := newWorkerFabric(workerID, cfg.Worker, progressPublisher)
+
+	workerService := workerservice.NewService(wrkFabric, tasksConsumer)
 	slog.Info("dependencies initialized")
 
-	initServer(cfg.HTTP, workerService)
+	go func() {
+		err := workerService.Run(context.Background())
+		if err != nil {
+			slog.Error("worker service failed", slog.Any("error", err))
+		}
+		slog.Info("worker service stopped")
+	}()
+
+	initServer(cfg.HTTP)
 
 	return nil
 }
@@ -112,21 +126,14 @@ func initLogger(cfg *logging.LoggerConfig, id uuid.UUID) {
 		slog.String("service", "worker"))
 }
 
-func initServer(httpServerConfig *HTTPServerConfig, workerService workersrv.Service) {
+func initServer(httpServerConfig *HTTPServerConfig) {
 	slog.Info("initializing http server...")
 
-	workerHandler := handler.NewHandler(workerService)
-
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/v1/tasks/", workerHandler.HandleCreateTask)
-	mux.HandleFunc("PUT /api/v1/tasks/{task_id}/do", workerHandler.HandleDoTask)
-	mux.HandleFunc("DELETE /api/v1/tasks/{task_id}", workerHandler.HandleDeleteTask)
 	mux.HandleFunc("GET /health", healthHandler)
 
-	wrappedMux := recoverMiddleware(mux)
-
 	slog.Info("http server initialized, serving...")
-	err := http.ListenAndServe(fmt.Sprintf(":%d", httpServerConfig.Port), wrappedMux)
+	err := http.ListenAndServe(fmt.Sprintf(":%d", httpServerConfig.Port), mux)
 	if err != nil {
 		slog.Error("failed to start server", "error", err)
 	}
@@ -136,17 +143,4 @@ func initServer(httpServerConfig *HTTPServerConfig, workerService workersrv.Serv
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("OK"))
-}
-
-func recoverMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if err := recover(); err != nil {
-				w.Header().Set("Connection", "close")
-				slog.Error("Unexpected panic", slog.Any("error", err), slog.String("stacktrace", string(debug.Stack())))
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
 }

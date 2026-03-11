@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -8,11 +9,15 @@ import (
 	"runtime/debug"
 
 	"github.com/kestfor/CrackHash/cmd/manager/handler"
+	"github.com/kestfor/CrackHash/internal/services/broker/rabbitmq"
 	"github.com/kestfor/CrackHash/internal/services/manager"
-	"github.com/kestfor/CrackHash/internal/services/manager/healthchecker"
 	"github.com/kestfor/CrackHash/internal/services/manager/service"
+	"github.com/kestfor/CrackHash/internal/services/manager/storage/mongodb"
 	"github.com/kestfor/CrackHash/pkg/logging"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/spf13/cobra"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"gopkg.in/yaml.v3"
 )
 
@@ -62,27 +67,60 @@ func run(cfgPath string) error {
 
 	slog.Info("config validated")
 
-	slog.Info("registering worker in manager...")
+	ctx := context.Background()
 
-	slog.Info("initializing dependencies...")
-	slog.Info("dependencies initialized")
-
-	var healthCheckProvider = func(workerAddr string) healthchecker.HealthChecker {
-		return healthCheck(workerAddr, cfg)
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(cfg.Storage.URL))
+	if err != nil {
+		return err
 	}
 
-	managerService := service.NewService(cfg.HashCracker.Alphabet, healthCheckProvider)
+	if err := client.Ping(ctx, nil); err != nil {
+		return fmt.Errorf("db connection not healthy: %w", err)
+	}
+
+	db := client.Database(cfg.Storage.DB)
+
+	progressStorage, err := mongodb.NewTaskProgressStorage(db)
+	if err != nil {
+		return fmt.Errorf("create task progress storage: %w", err)
+	}
+
+	subTaskStorage, err := mongodb.NewSubTaskStorage(db)
+	if err != nil {
+		return fmt.Errorf("create subtask storage: %w", err)
+	}
+
+	conn, err := amqp.Dial(cfg.Broker.URL)
+	if err != nil {
+		return err
+	}
+
+	if err := rabbitmq.DefineQueues(conn, cfg.Broker.RequeueLimit); err != nil {
+		conn.Close()
+		return err
+	}
+	conn.Close()
+
+	progressConsumer := rabbitmq.NewConsumer(cfg.Broker.URL, rabbitmq.TasksProgressQueue, 0)
+	deadLettersConsumer := rabbitmq.NewConsumer(cfg.Broker.URL, rabbitmq.DeadLetterQueue, 0)
+
+	tasksPublisher, err := rabbitmq.NewPublisher(cfg.Broker.URL)
+	if err != nil {
+		return err
+	}
+	defer tasksPublisher.Close()
+
+	managerService := service.NewService(cfg.HashCracker.Alphabet, progressStorage, subTaskStorage, tasksPublisher, progressConsumer, deadLettersConsumer, cfg.RetrySendPeriod)
+	go func() {
+		if err := managerService.Run(ctx); err != nil {
+			slog.Error("manager service run failed", slog.Any("error", err))
+		}
+		slog.Info("manager service stopped")
+	}()
+
 	initServer(cfg.HTTP, managerService)
 
 	return nil
-}
-
-func healthCheck(workerAddr string, config *Config) healthchecker.HealthChecker {
-	return healthchecker.NewHTTPHealthChecker(&healthchecker.HTTPHealthCheckerConfig{
-		URL:      fmt.Sprintf("http://%s/health", workerAddr),
-		MaxTries: config.Healthcheck.MaxTries,
-		Period:   config.Healthcheck.Period,
-	})
 }
 
 func initServer(httpServerConfig *HTTPConfig, managerService manager.Service) {
@@ -93,8 +131,6 @@ func initServer(httpServerConfig *HTTPConfig, managerService manager.Service) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/hash/crack", workerHandler.HandleCreateTask)
 	mux.HandleFunc("GET /api/hash/status", workerHandler.HandleGetTaskProgress)
-	mux.HandleFunc("POST /api/tasks/progress", workerHandler.HandleUpdateProgress)
-	mux.HandleFunc("GET /api/hash/register-worker", workerHandler.HandleRegisterWorker)
 	mux.HandleFunc("GET /health", healthHandler)
 
 	wrappedMux := recoverMiddleware(mux)

@@ -45,7 +45,3 @@ func SplitRange(totalSize uint64, parts int) ([]Range, error) {
 
 	return ranges, nil
 }
-
-func ToPtr[T any](v T) *T {
-	return &v
-}

@@ -2,13 +2,11 @@ package workerservice
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sync"
-	"time"
 
-	"github.com/google/uuid"
-	expirable "github.com/hashicorp/golang-lru/v2/expirable"
+	"github.com/kestfor/CrackHash/internal/services/broker"
 	entities "github.com/kestfor/CrackHash/internal/services/worker"
 	worker "github.com/kestfor/CrackHash/internal/services/worker/worker"
 )
@@ -18,90 +16,45 @@ type Fabric interface {
 }
 
 type workerService struct {
-	maxParallel  int
-	workerFabric Fabric
-
-	mu           sync.Mutex
-	tasksContext *expirable.LRU[uuid.UUID, taskExecutionContext]
+	workerFabric  Fabric
+	tasksConsumer broker.Consumer
 }
 
-type taskExecutionContext struct {
-	executionContext context.Context
-	task             *entities.Task
-	worker           worker.Worker
-}
-
-func NewService(config *Config, workerFabric Fabric) *workerService {
+func NewService(workerFabric Fabric, tasksConsumer broker.Consumer) *workerService {
 	return &workerService{
-		maxParallel:  config.MaxParallel,
-		workerFabric: workerFabric,
-
-		tasksContext: expirable.NewLRU[uuid.UUID, taskExecutionContext](config.MaxParallel, nil, time.Minute*5),
+		workerFabric:  workerFabric,
+		tasksConsumer: tasksConsumer,
 	}
 }
 
-func (s *workerService) CreateTask(ctx context.Context, task *entities.Task) error {
-	if err := validateTask(task); err != nil {
+func (s *workerService) Run(ctx context.Context) error {
+	if err := s.tasksConsumer.Consume(ctx, s); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *workerService) Handle(msg broker.Message) error {
+	task := entities.Task{}
+	if err := json.Unmarshal(msg.Body, &task); err != nil {
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.tasksContext.Len() >= s.maxParallel {
-		return fmt.Errorf("max parallel tasks reached")
+	if err := validateTask(&task); err != nil {
+		return err
 	}
 
-	if s.tasksContext.Contains(task.TaskID) {
-		return entities.ErrTaskAlreadyExists
-	}
+	slog.Info("received task", slog.String("task", task.String()))
 
-	s.tasksContext.Add(task.TaskID, taskExecutionContext{
-		task: task,
-	})
+	go func() {
+		wrk := s.workerFabric.NewWorker()
+		wrk.Do(context.Background(), &task)
 
-	slog.Info("task created", slog.String("task_id", task.TaskID.String()))
-
-	return nil
-}
-
-func (s *workerService) DoTask(ctx context.Context, taskID uuid.UUID) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	taskContext, ok := s.tasksContext.Get(taskID)
-	if !ok {
-		return entities.ErrTaskNotFound
-	}
-
-	wrk := taskContext.worker
-	if wrk == nil {
-		slog.Info("starting task execution", slog.Any("task_id", taskID))
-
-		wrk = s.workerFabric.NewWorker()
-		taskContext.worker = wrk
-		taskContext.executionContext = context.Background()
-
-		s.tasksContext.Add(taskID, taskContext)
-
-		wrk.Do(taskContext.executionContext, taskContext.task)
-	}
-
-	return nil
-}
-
-func (s *workerService) DeleteTask(ctx context.Context, taskID uuid.UUID) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	taskContext, ok := s.tasksContext.Get(taskID)
-	if ok {
-		taskContext.worker.Cancel()
-	}
-
-	s.tasksContext.Remove(taskID)
-
-	slog.Info("task deleted", slog.Any("task_id", taskID))
+		slog.Info("task execution completed", slog.String("task", task.String()))
+		if err := msg.Ack(); err != nil {
+			slog.Error("failed to ack message", slog.String("task", task.String()), slog.Any("error", err))
+		}
+	}()
 
 	return nil
 }
