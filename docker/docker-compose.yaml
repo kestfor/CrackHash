@@ -34,6 +34,8 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
+    volumes:
+      - ./data/rabbitmq:/var/lib/rabbitmq
     networks:
       - crackhash-net
     healthcheck:
@@ -49,7 +51,7 @@ services:
     ports:
       - "27017:27017"
     volumes:
-      - mongo1-data:/data/db
+      - ./data/mongo1:/data/db
     networks:
       - crackhash-net
     healthcheck:
@@ -63,7 +65,7 @@ services:
     container_name: mongo2
     command: [ "--replSet", "rs0", "--bind_ip_all" ]
     volumes:
-      - mongo2-data:/data/db
+      - ./data/mongo2:/data/db
     networks:
       - crackhash-net
 
@@ -72,7 +74,7 @@ services:
     container_name: mongo3
     command: [ "--replSet", "rs0", "--bind_ip_all" ]
     volumes:
-      - mongo3-data:/data/db
+      - ./data/mongo3:/data/db
     networks:
       - crackhash-net
 
@@ -91,11 +93,6 @@ services:
       - ./init-replset.js:/init-replset.js:ro
     command: >
       bash -c "sleep 5 && mongosh --host mongo1:27017 /init-replset.js"
-
-volumes:
-  mongo1-data:
-  mongo2-data:
-  mongo3-data:
 
 networks:
   crackhash-net:
