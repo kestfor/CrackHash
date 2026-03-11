@@ -84,26 +84,23 @@ func run(cfgPath string) error {
 	initLogger(cfg.Logger, workerID)
 
 	conn, err := amqp.Dial(cfg.Broker.URL)
-
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	err = rabbitmq.DefineQueues(conn, cfg.Broker.RequeueLimit)
 	if err != nil {
 		return err
 	}
 
-	progressPublisher, err := rabbitmq.NewPublisher(conn)
-	if err != nil {
+	if err = rabbitmq.DefineQueues(conn, cfg.Broker.RequeueLimit); err != nil {
+		conn.Close()
 		return err
 	}
+	conn.Close()
 
-	tasksConsumer, err := rabbitmq.NewConsumer(conn, rabbitmq.TasksQueue, cfg.Worker.MaxParallel)
+	progressPublisher, err := rabbitmq.NewPublisher(cfg.Broker.URL)
 	if err != nil {
 		return err
 	}
+	defer progressPublisher.Close()
+
+	tasksConsumer := rabbitmq.NewConsumer(cfg.Broker.URL, rabbitmq.TasksQueue, cfg.Worker.MaxParallel)
 
 	wrkFabric := newWorkerFabric(workerID, cfg.Worker, progressPublisher)
 

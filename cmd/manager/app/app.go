@@ -79,6 +79,7 @@ func run(cfgPath string) error {
 	}
 
 	db := client.Database(cfg.Storage.DB)
+
 	progressStorage, err := mongodb.NewTaskProgressStorage(db)
 	if err != nil {
 		return fmt.Errorf("create task progress storage: %w", err)
@@ -94,26 +95,20 @@ func run(cfgPath string) error {
 		return err
 	}
 
-	defer conn.Close()
-
 	if err := rabbitmq.DefineQueues(conn, cfg.Broker.RequeueLimit); err != nil {
+		conn.Close()
 		return err
 	}
+	conn.Close()
 
-	progressConsumer, err := rabbitmq.NewConsumer(conn, rabbitmq.TasksProgressQueue, 0)
+	progressConsumer := rabbitmq.NewConsumer(cfg.Broker.URL, rabbitmq.TasksProgressQueue, 0)
+	deadLettersConsumer := rabbitmq.NewConsumer(cfg.Broker.URL, rabbitmq.DeadLetterQueue, 0)
+
+	tasksPublisher, err := rabbitmq.NewPublisher(cfg.Broker.URL)
 	if err != nil {
 		return err
 	}
-
-	deadLettersConsumer, err := rabbitmq.NewConsumer(conn, rabbitmq.DeadLetterQueue, 0)
-	if err != nil {
-		return err
-	}
-
-	tasksPublisher, err := rabbitmq.NewPublisher(conn)
-	if err != nil {
-		return err
-	}
+	defer tasksPublisher.Close()
 
 	managerService := service.NewService(cfg.HashCracker.Alphabet, progressStorage, subTaskStorage, tasksPublisher, progressConsumer, deadLettersConsumer, cfg.RetrySendPeriod)
 	go func() {

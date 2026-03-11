@@ -14,6 +14,7 @@ type ProgressStorage interface {
 }
 
 type SubTaskStorage interface {
+	Has(ctx context.Context, taskID uuid.UUID) (bool, error)
 	CreateBatch(ctx context.Context, tasks []worker.Task) error
 	FindPending(ctx context.Context) ([]manager.SubTask, error)
 	MarkSent(ctx context.Context, taskID uuid.UUID, startIndex, endIndex uint64) error

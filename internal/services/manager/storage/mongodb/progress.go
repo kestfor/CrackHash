@@ -22,7 +22,7 @@ func NewTaskProgressStorage(db *mongo.Database) (*taskProgressStorage, error) {
 	index := mongo.IndexModel{
 		Keys: bson.D{
 			{Key: "task_id", Value: 1},
-			{Key: "worker_id", Value: 1},
+			{Key: "start_index", Value: 1},
 		},
 		Options: options.Index().SetUnique(true),
 	}
@@ -38,28 +38,31 @@ func NewTaskProgressStorage(db *mongo.Database) (*taskProgressStorage, error) {
 }
 
 func (r *taskProgressStorage) Upsert(ctx context.Context, p worker.TaskProgress) error {
-	filter := bson.M{
-		"task_id":   p.TaskID,
-		"worker_id": p.WorkerID,
-		"$or": []bson.M{
-			{"iterations_done": bson.M{"$lte": p.IterationsDone}},
-			{"iterations_done": bson.M{"$exists": false}},
-		},
-	}
-
-	update := bson.M{
-		"$set": bson.M{
+	update := mongo.Pipeline{
+		{{"$set", bson.M{
+			"updated_at": time.Now(),
+		}}},
+		{{"$set", bson.M{
+			"task_id":          p.TaskID,
+			"start_index":      p.StartIndex,
 			"status":           p.Status,
-			"iterations_done":  p.IterationsDone,
 			"total_iterations": p.TotalIterations,
 			"result":           p.Result,
-			"updated_at":       time.Now(),
-		},
+			"iterations_done": bson.M{
+				"$cond": bson.M{
+					"if":   bson.M{"$gt": []interface{}{p.IterationsDone, "$iterations_done"}},
+					"then": p.IterationsDone,
+					"else": "$iterations_done",
+				},
+			},
+		}}},
 	}
-
 	opts := options.Update().SetUpsert(true)
-
-	_, err := r.col.UpdateOne(ctx, filter, update, opts)
+	_, err := r.col.UpdateOne(ctx,
+		bson.M{"task_id": p.TaskID, "start_index": p.StartIndex},
+		update,
+		opts,
+	)
 	return err
 }
 

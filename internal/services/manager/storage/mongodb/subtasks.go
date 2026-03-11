@@ -85,3 +85,14 @@ func (s *subTaskStorage) MarkSent(ctx context.Context, taskID uuid.UUID, startIn
 
 	return nil
 }
+
+func (s *subTaskStorage) Has(ctx context.Context, taskID uuid.UUID) (bool, error) {
+	filter := bson.M{
+		"task_id": taskID,
+	}
+	count, err := s.col.CountDocuments(ctx, filter)
+	if err != nil {
+		return false, fmt.Errorf("check subtasks: %w", err)
+	}
+	return count > 0, nil
+}

@@ -3,6 +3,8 @@ package rabbitmq
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,29 +12,74 @@ import (
 )
 
 type publisher struct {
+	mu   sync.Mutex
+	url  string
 	conn *amqp.Connection
 	ch   *amqp.Channel
 }
 
-func NewPublisher(conn *amqp.Connection) (*publisher, error) {
+func NewPublisher(url string) (*publisher, error) {
+	p := &publisher{url: url}
+	if err := p.reconnect(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (p *publisher) reconnect() error {
+	if p.ch != nil {
+		p.ch.Close()
+	}
+	if p.conn != nil {
+		p.conn.Close()
+	}
+
+	conn, err := amqp.Dial(p.url)
+	if err != nil {
+		return err
+	}
+
 	ch, err := conn.Channel()
 	if err != nil {
-		return nil, err
+		conn.Close()
+		return err
 	}
 
 	if err := ch.Confirm(false); err != nil {
-		return nil, err
+		ch.Close()
+		conn.Close()
+		return err
 	}
 
-	return &publisher{
-		conn: conn,
-		ch:   ch,
-	}, nil
-
+	p.conn = conn
+	p.ch = ch
+	return nil
 }
 
 func (p *publisher) Publish(ctx context.Context, routingKey string, message []byte) error {
-	dc, err := p.ch.PublishWithDeferredConfirmWithContext(
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	dc, err := p.publish(ctx, routingKey, message)
+	if err != nil {
+		slog.Warn("publish failed, attempting reconnect...", slog.Any("error", err))
+		if reconnErr := p.reconnect(); reconnErr != nil {
+			return fmt.Errorf("publish: %w; reconnect: %v", err, reconnErr)
+		}
+		dc, err = p.publish(ctx, routingKey, message)
+		if err != nil {
+			return fmt.Errorf("publish after reconnect: %w", err)
+		}
+	}
+
+	if dc.Wait() {
+		return nil
+	}
+	return fmt.Errorf("message nacked by broker")
+}
+
+func (p *publisher) publish(ctx context.Context, routingKey string, message []byte) (*amqp.DeferredConfirmation, error) {
+	return p.ch.PublishWithDeferredConfirmWithContext(
 		ctx,
 		"",
 		routingKey,
@@ -46,16 +93,17 @@ func (p *publisher) Publish(ctx context.Context, routingKey string, message []by
 			Timestamp:    time.Now(),
 		},
 	)
-	if err != nil {
-		return fmt.Errorf("publish: %w", err)
-	}
-
-	if dc.Wait() {
-		return nil
-	}
-	return fmt.Errorf("message nacked by broker")
 }
 
 func (p *publisher) Close() error {
-	return p.ch.Close()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.ch != nil {
+		_ = p.ch.Close()
+	}
+	if p.conn != nil {
+		return p.conn.Close()
+	}
+	return nil
 }

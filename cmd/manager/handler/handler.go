@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -56,7 +57,13 @@ func (h *managerHTTPHandler) HandleGetTaskProgress(w http.ResponseWriter, r *htt
 
 	progress, err := h.managerService.TaskProgress(r.Context(), parsedID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+
+		if errors.Is(err, manager.ErrTaskNotFound) {
+			status = http.StatusNotFound
+		}
+
+		http.Error(w, err.Error(), status)
 		return
 	}
 

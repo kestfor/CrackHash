@@ -4,39 +4,84 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/kestfor/CrackHash/internal/services/broker"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+const reconnectDelay = 3 * time.Second
+
 type consumer struct {
-	conn      *amqp.Connection
-	ch        *amqp.Channel
+	url       string
 	queueName string
+	prefetch  int
+	cancel    context.CancelFunc
 }
 
-func NewConsumer(conn *amqp.Connection, queueName string, prefetch int) (*consumer, error) {
+func NewConsumer(url, queueName string, prefetch int) *consumer {
+	return &consumer{url: url, queueName: queueName, prefetch: prefetch}
+}
+
+func (c *consumer) connect() (*amqp.Connection, *amqp.Channel, error) {
+	conn, err := amqp.Dial(c.url)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	ch, err := conn.Channel()
 	if err != nil {
-		return nil, err
+		conn.Close()
+		return nil, nil, err
 	}
 
-	err = ch.Qos(
-		prefetch, // макс. число unacked сообщений
-		0,
-		false,
-	)
-
-	if err != nil {
+	if err := ch.Qos(c.prefetch, 0, false); err != nil {
 		ch.Close()
-		return nil, err
+		conn.Close()
+		return nil, nil, err
 	}
 
-	return &consumer{conn: conn, ch: ch, queueName: queueName}, nil
+	return conn, ch, nil
 }
 
 func (c *consumer) Consume(ctx context.Context, handler broker.Handler) error {
-	deliveries, err := c.ch.Consume(
+	ctx, c.cancel = context.WithCancel(ctx)
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		conn, ch, err := c.connect()
+		if err != nil {
+			slog.Warn("broker unavailable, retrying...", slog.Any("error", err), slog.String("queue", c.queueName))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(reconnectDelay):
+				continue
+			}
+		}
+
+		slog.Info("consumer connected to broker", slog.String("queue", c.queueName))
+		err = c.consumeLoop(ctx, ch, handler)
+		conn.Close()
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		slog.Warn("consumer disconnected, reconnecting...", slog.Any("error", err), slog.String("queue", c.queueName))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(reconnectDelay):
+		}
+	}
+}
+
+func (c *consumer) consumeLoop(ctx context.Context, ch *amqp.Channel, handler broker.Handler) error {
+	deliveries, err := ch.Consume(
 		c.queueName,
 		"",
 		false,
@@ -81,5 +126,8 @@ func (c *consumer) Consume(ctx context.Context, handler broker.Handler) error {
 }
 
 func (c *consumer) Close() error {
-	return c.ch.Close()
+	if c.cancel != nil {
+		c.cancel()
+	}
+	return nil
 }

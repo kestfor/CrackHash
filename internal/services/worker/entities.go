@@ -27,6 +27,7 @@ type Task struct {
 type TaskProgress struct {
 	TaskID          uuid.UUID `json:"task_id" bson:"task_id"`
 	WorkerID        uuid.UUID `json:"worker_id" bson:"worker_id"`
+	StartIndex      uint64    `json:"start_index" bson:"start_index"`
 	Status          Status    `json:"status" bson:"status"`
 	IterationsDone  int       `json:"iterations_done" bson:"iterations_done"`
 	TotalIterations int       `json:"total_iterations" bson:"total_iterations"`

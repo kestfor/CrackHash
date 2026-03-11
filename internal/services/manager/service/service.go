@@ -175,8 +175,9 @@ func (s *managerService) handleDeadLetter(ctx context.Context, msg broker.Messag
 	slog.Info("got dead letter", slog.String("task", deadSubTask.String()))
 
 	failedProgress := worker.TaskProgress{
-		TaskID: deadSubTask.TaskID,
-		Status: worker.StatusError,
+		TaskID:     deadSubTask.TaskID,
+		StartIndex: deadSubTask.StartIndex,
+		Status:     worker.StatusError,
 	}
 
 	if err := s.progressStorage.Upsert(ctx, failedProgress); err != nil {
@@ -189,6 +190,17 @@ func (s *managerService) handleDeadLetter(ctx context.Context, msg broker.Messag
 }
 
 func (s *managerService) TaskProgress(ctx context.Context, taskID uuid.UUID) (manager.TaskStatus, error) {
+	hasTask, err := s.subTaskStorage.Has(ctx, taskID)
+	if err != nil {
+		slog.Error("check task", slog.Any("error", err))
+		return manager.TaskStatus{}, fmt.Errorf("check task: %w", err)
+	}
+
+	if !hasTask {
+		slog.Warn("task not found", slog.Any("task_id", taskID))
+		return manager.TaskStatus{}, manager.ErrTaskNotFound
+	}
+
 	progresses, err := s.progressStorage.Collect(ctx, taskID)
 
 	if err != nil {

@@ -159,7 +159,8 @@ func (w *workerImpl) publishProgress(ctx context.Context, progress *worker.TaskP
 	}
 
 	if err := w.publisher.Publish(ctx, rabbitmq.TasksProgressQueue, message); err != nil {
-		slog.Error("failed to publish progress", slog.Any("error", err))
+		slog.Warn("failed to publish progress", slog.Any("error", err))
+		return
 	}
 
 	slog.Info("progress published", slog.String("progress", progress.String()))
@@ -169,6 +170,7 @@ func (w *workerImpl) contextToProgress(wrkContext *workerContext) *worker.TaskPr
 	return &worker.TaskProgress{
 		TaskID:          w.task.TaskID,
 		WorkerID:        w.workerID,
+		StartIndex:      w.task.StartIndex,
 		IterationsDone:  int(wrkContext.IterationsDone.Load()),
 		TotalIterations: wrkContext.TotalIterations,
 		Result:          wrkContext.Matches(),
