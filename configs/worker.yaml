@@ -3,6 +3,7 @@ http:
 
 broker:
   url: amqp://guest:guest@rabbitmq:5672/
+  requeue_limit: 2
 
 workers:
   max_parallel: 1
