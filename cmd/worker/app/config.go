@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kestfor/CrackHash/internal/services/worker/notifier"
-	"github.com/kestfor/CrackHash/internal/services/worker/registerer"
+	"github.com/kestfor/CrackHash/internal/services/broker/rabbitmq"
 	"github.com/kestfor/CrackHash/internal/services/worker/workerservice"
 	"github.com/kestfor/CrackHash/pkg/logging"
 )
@@ -15,11 +14,10 @@ type HTTPServerConfig struct {
 }
 
 type Config struct {
-	HTTP       *HTTPServerConfig                `yaml:"http"`
-	Registerer *registerer.HTTPRegistererConfig `yaml:"registerer"`
-	Notifier   *notifier.HTTPNotifierConfig     `yaml:"notifier"`
-	Worker     *workerservice.Config            `yaml:"workers"`
-	Logger     *logging.LoggerConfig            `yaml:"logger"`
+	HTTP   *HTTPServerConfig     `yaml:"http"`
+	Broker *rabbitmq.Config      `yaml:"broker"`
+	Worker *workerservice.Config `yaml:"workers"`
+	Logger *logging.LoggerConfig `yaml:"logger"`
 }
 
 func (c *Config) Validate() error {
@@ -27,12 +25,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("http config is required")
 	}
 
-	if c.Registerer == nil {
-		return fmt.Errorf("registerer config is required")
-	}
-
-	if c.Notifier == nil {
-		return fmt.Errorf("notifier config is required")
+	if c.Broker == nil {
+		return fmt.Errorf("broker config is required")
 	}
 
 	if c.Worker == nil {

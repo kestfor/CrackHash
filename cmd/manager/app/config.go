@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kestfor/CrackHash/internal/services/manager/healthchecker"
+	"github.com/kestfor/CrackHash/internal/services/broker/rabbitmq"
+	"github.com/kestfor/CrackHash/internal/services/manager/storage/mongodb"
 	"github.com/kestfor/CrackHash/pkg/logging"
 )
 
@@ -16,16 +17,13 @@ type HashCrackerConfig struct {
 	Alphabet string `yaml:"alphabet"`
 }
 
-type HealthCheckConfig struct {
-	Period   time.Duration `yaml:"period"`
-	MaxTries int           `yaml:"max_tries"`
-}
-
 type Config struct {
-	HTTP        *HTTPConfig                            `yaml:"http"`
-	Healthcheck *healthchecker.HTTPHealthCheckerConfig `yaml:"healthcheck"`
-	HashCracker *HashCrackerConfig                     `yaml:"hash_cracker"`
-	Logger      *logging.LoggerConfig                  `yaml:"logger"`
+	HTTP            *HTTPConfig           `yaml:"http"`
+	Storage         *mongodb.Config       `yaml:"storage"`
+	Broker          *rabbitmq.Config      `yaml:"broker"`
+	HashCracker     *HashCrackerConfig    `yaml:"hash_cracker"`
+	Logger          *logging.LoggerConfig `yaml:"logger"`
+	RetrySendPeriod time.Duration         `yaml:"retry_send_period"`
 }
 
 func (c *Config) Validate() error {
@@ -33,8 +31,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("http config is required")
 	}
 
-	if c.Healthcheck == nil {
-		return fmt.Errorf("healthcheck config is required")
+	if c.Broker == nil {
+		return fmt.Errorf("broker config is required")
+	}
+
+	if c.Storage == nil {
+		return fmt.Errorf("storage config is required")
 	}
 
 	if c.HashCracker == nil {

@@ -1,7 +1,8 @@
 package main
 
 import (
-	"log"
+	"log/slog"
+	"os"
 
 	"github.com/kestfor/CrackHash/cmd/manager/app"
 )
@@ -9,6 +10,7 @@ import (
 func main() {
 	err := app.New().Execute()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("failed to start manager", "error", err)
+		os.Exit(1)
 	}
 }

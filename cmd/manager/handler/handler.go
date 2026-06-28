@@ -2,14 +2,12 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 
 	"github.com/google/uuid"
 	"github.com/kestfor/CrackHash/internal/services/manager"
-	"github.com/kestfor/CrackHash/internal/services/worker"
 )
 
 type managerHTTPHandler struct {
@@ -59,53 +57,18 @@ func (h *managerHTTPHandler) HandleGetTaskProgress(w http.ResponseWriter, r *htt
 
 	progress, err := h.managerService.TaskProgress(r.Context(), parsedID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+
+		if errors.Is(err, manager.ErrTaskNotFound) {
+			status = http.StatusNotFound
+		}
+
+		http.Error(w, err.Error(), status)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(progress); err != nil {
-		slog.Warn("failed to encode response", slog.Any("error", err))
-	}
-}
-
-// HandleUpdateProgress receives progress updates from workers (push model)
-func (h *managerHTTPHandler) HandleUpdateProgress(w http.ResponseWriter, r *http.Request) {
-	progress := &worker.TaskProgress{}
-
-	err := json.NewDecoder(r.Body).Decode(progress)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if err := h.managerService.UpdateProgress(r.Context(), progress); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
-func (h *managerHTTPHandler) HandleRegisterWorker(w http.ResponseWriter, r *http.Request) {
-	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid remote address: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	workerPort := r.Header.Get("X-Worker-Port")
-	if workerPort == "" {
-		http.Error(w, "X-Worker-Port header is required", http.StatusBadRequest)
-		return
-	}
-
-	workerAddr := net.JoinHostPort(remoteIP, workerPort)
-
-	workerID := h.managerService.AddWorker(r.Context(), workerAddr)
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(RegisterWorkerResponse{WorkerID: workerID}); err != nil {
 		slog.Warn("failed to encode response", slog.Any("error", err))
 	}
 }
